@@ -82,6 +82,33 @@ async function restoreBrightness() {
   } catch (_) {}
 }
 
+// ── Exposure lock ─────────────────────────────────────────────────────────────
+// Locks camera AE at the current exposure setting so all frames in a scan
+// (dark reference + spectral steps) are captured at identical gain.
+// Without this, AE adjusts per-frame and the ambient correction ratios are
+// computed across inconsistent scales — invalidating the flat-field math.
+async function lockExposure() {
+  if (!cameraStream) return;
+  const track = cameraStream.getVideoTracks()[0];
+  try {
+    const cap = track.getCapabilities();
+    if (cap.exposureMode && cap.exposureMode.includes('manual')) {
+      const s = track.getSettings();
+      await track.applyConstraints({
+        advanced: [{ exposureMode: 'manual', exposureTime: s.exposureTime }],
+      });
+    }
+  } catch (_) {}
+}
+
+async function unlockExposure() {
+  if (!cameraStream) return;
+  const track = cameraStream.getVideoTracks()[0];
+  try {
+    await track.applyConstraints({ advanced: [{ exposureMode: 'continuous' }] });
+  } catch (_) {}
+}
+
 // ── Camera ────────────────────────────────────────────────────────────────────
 async function startCamera() {
   cameraStream = await navigator.mediaDevices.getUserMedia({
@@ -218,13 +245,23 @@ async function runScan() {
   videoEl.classList.add('pip');
   pipContainer.style.display = 'block';
   faceGuide.style.opacity    = '1';
-  stepLabel.textContent      = 'Calibrating ambient light…';
+  stepLabel.textContent      = 'Calibrating…';
   stepCounter.textContent    = `0 / ${colors.length}`;
   progressBar.style.width    = '0%';
 
-  // Dark-frame reference: screen black → camera sees only ambient light.
-  // Every spectral frame is then corrected by (spectral - ambient) / ambient,
-  // isolating the screen's contribution and normalising out the ambient spectrum.
+  // ── Exposure lock + dark reference ─────────────────────────────────────────
+  // Step 1: Flash mid-grey to drive AE to a stable mid-range gain that works
+  //         for both the dim near-IR steps and the bright yellow/green steps.
+  await setFlashColor('#606060');
+  await sleep(700);           // let AE fully settle at this brightness level
+
+  // Step 2: Lock exposure so every subsequent frame — dark ref and all spectral
+  //         steps — is captured at identical gain. This is required for the
+  //         (spectral - ambient) / ambient flat-field correction to be valid.
+  await lockExposure();
+
+  // Step 3: Capture ambient reference with screen black.
+  //         On AMOLED (S21 Ultra) #000000 = pixels off = true zero screen emission.
   const ambientRef = await captureDarkFrame();
   stepLabel.textContent = 'Hold still…';
   await sleep(150);
@@ -259,6 +296,7 @@ async function runScan() {
   await sleep(300);
 
   flashBg.style.opacity = '0';
+  await unlockExposure();     // restore AE before handing camera back to user
   await restoreBrightness();  // back to user's normal brightness
   return frames;
 }
@@ -359,7 +397,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     const result = analyzeLiveness(frames);
     showResult(result);
   } catch (err) {
-    stopCamera(); releaseWakeLock(); restoreBrightness();
+    unlockExposure(); stopCamera(); releaseWakeLock(); restoreBrightness();
     alert('Camera error: ' + err.message);
     showScreen('register');
   }
@@ -377,7 +415,7 @@ document.getElementById('btn-verify').addEventListener('click', async () => {
     const result = analyzeLiveness(frames, storedTemplate);
     showResult(result);
   } catch (err) {
-    stopCamera(); releaseWakeLock(); restoreBrightness();
+    unlockExposure(); stopCamera(); releaseWakeLock(); restoreBrightness();
     alert('Camera error: ' + err.message);
     showScreen('start');
   }
