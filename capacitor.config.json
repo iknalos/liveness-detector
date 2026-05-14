@@ -1,0 +1,11 @@
+{
+  "appId": "com.livenessdetector.app",
+  "appName": "LivenessCheck",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

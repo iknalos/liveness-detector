@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">LivenessCheck</string>
+    <string name="title_activity_main">LivenessCheck</string>
+    <string name="package_name">com.livenessdetector.app</string>
+    <string name="custom_url_scheme">com.livenessdetector.app</string>
+</resources>

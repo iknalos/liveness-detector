@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0a0a0a">
+  <title>LivenessCheck</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 1 — Start
+  ═══════════════════════════════════════════════════════════════ -->
+  <div id="screen-start" class="screen active">
+    <div class="start-inner">
+      <div class="logo-ring">
+        <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+          <!-- Spectral arc segments -->
+          <circle cx="40" cy="40" r="34" fill="none" stroke="#7B00D4" stroke-width="6" stroke-dasharray="12 4"
+                  transform="rotate(-90 40 40)" opacity="0.8"/>
+          <circle cx="40" cy="40" r="26" fill="none" stroke="#0088FF" stroke-width="4" stroke-dasharray="9 3"
+                  transform="rotate(30 40 40)" opacity="0.7"/>
+          <circle cx="40" cy="40" r="18" fill="none" stroke="#00FF88" stroke-width="3" stroke-dasharray="7 3"
+                  transform="rotate(60 40 40)" opacity="0.6"/>
+          <!-- Eye icon -->
+          <ellipse cx="40" cy="40" rx="10" ry="7" fill="none" stroke="white" stroke-width="1.5"/>
+          <circle cx="40" cy="40" r="3.5" fill="white"/>
+        </svg>
+      </div>
+
+      <h1>Liveness<br><span class="gradient-text">Check</span></h1>
+      <p class="subtitle">
+        24-step spectral scan · 400–750 nm<br>
+        Detects real faces vs. photos &amp; screens
+      </p>
+
+      <div class="how-it-works">
+        <div class="how-row">
+          <div class="how-icon" style="background:#7B00D4">💡</div>
+          <div class="how-text">Screen flashes 24 colors across the full visible spectrum</div>
+        </div>
+        <div class="how-row">
+          <div class="how-icon" style="background:#0055FF">📷</div>
+          <div class="how-text">Front camera captures your face under each illumination</div>
+        </div>
+        <div class="how-row">
+          <div class="how-icon" style="background:#22c55e">🔬</div>
+          <div class="how-text">Skin reflectance signature confirms a live human face</div>
+        </div>
+      </div>
+
+      <button id="btn-start" class="btn-primary">Start Scan</button>
+
+      <p class="hint">Best in a dim room · Keep phone at face level · ~8 seconds</p>
+    </div>
+  </div>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 2 — Scan
+  ═══════════════════════════════════════════════════════════════ -->
+  <div id="screen-scan" class="screen">
+
+    <!-- Full-screen spectral flash layer -->
+    <div id="flash-bg"></div>
+
+    <!-- Camera feed (full-screen during positioning, PiP during scan) -->
+    <video id="camera-feed" autoplay playsinline muted></video>
+
+    <!-- Hidden canvas for pixel capture -->
+    <canvas id="capture-canvas" style="display:none;"></canvas>
+
+    <!-- PiP label (shown only when video is in PiP mode) -->
+    <div id="pip-container" style="display:none;">
+      <span class="pip-label">Your face</span>
+    </div>
+
+    <!-- Face-guide oval -->
+    <div id="face-guide" style="opacity:0;">
+      <svg viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg">
+        <ellipse cx="100" cy="130" rx="78" ry="108"
+                 fill="none" stroke="rgba(255,255,255,0.7)"
+                 stroke-width="2.5" stroke-dasharray="10 5"/>
+      </svg>
+    </div>
+
+    <!-- Status bar at bottom -->
+    <div id="scan-footer">
+      <div id="step-label">Preparing camera…</div>
+      <div id="progress-track">
+        <div id="progress-bar"></div>
+      </div>
+      <div id="step-counter">0 / 24</div>
+    </div>
+
+  </div>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SCREEN 3 — Result
+  ═══════════════════════════════════════════════════════════════ -->
+  <div id="screen-result" class="screen">
+    <div class="result-inner">
+      <div id="result-icon" class="result-icon"></div>
+      <h2 id="result-title"></h2>
+
+      <div class="score-block">
+        <div class="score-label">Confidence score</div>
+        <div class="score-track">
+          <div id="result-score-bar"></div>
+        </div>
+        <div id="result-score-value" class="score-value"></div>
+      </div>
+
+      <div id="result-details" class="result-details"></div>
+
+      <button id="btn-retry" class="btn-primary btn-outline">Scan Again</button>
+    </div>
+  </div>
+
+  <script src="js/colors.js"></script>
+  <script src="js/analyzer.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
