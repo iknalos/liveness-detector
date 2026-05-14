@@ -198,12 +198,12 @@ async function captureRawData() {
   return extractFaceData(ctx.getImageData(0, 0, w, h), w, h);
 }
 
-// Average multiple rapid frame grabs to reduce sensor noise.
-// 15ms between samples ensures we pull distinct frames from the camera pipeline.
+// Average multiple frame grabs to reduce sensor noise.
+// 40ms between samples guarantees distinct frames at 30fps (frame period = 33ms).
 async function captureAveragedData(count = 3) {
   const samples = [];
   for (let k = 0; k < count; k++) {
-    if (k > 0) await sleep(15);
+    if (k > 0) await sleep(40);
     samples.push(await captureRawData());
   }
   const n = samples.length;
@@ -259,14 +259,16 @@ function setFlashColor(hex) {
 }
 
 // ── Scan loop (shared by both register and verify) ────────────────────────────
-// Registration: 24 steps × 340ms  ≈ 9 seconds  (high quality template)
-// Verification: 12 steps × 240ms  ≈ 3-4 seconds (fast daily check)
+// AE/AWB/AF are locked before the loop, so flashMs only needs to cover camera
+// pipeline flush (~2-3 frames at 30fps = 67-100ms), not AE convergence.
+// Registration: 24 steps × 155ms  ≈ 5-6 seconds  (high quality template)
+// Verification: 12 steps × 125ms  ≈ 2-3 seconds  (fast daily check)
 async function runScan() {
   const frames    = [];
   const isReg     = scanMode === 'register';
   const colors    = isReg ? SPECTRAL_COLORS : VERIFY_COLORS;
-  const flashMs   = isReg ? 280 : 200;   // ms screen stays on per step
-  const gapMs     = isReg ?  60 :  40;   // ms dark gap between steps
+  const flashMs   = isReg ? 120 : 100;   // ms screen stays on per step
+  const gapMs     = isReg ?  35 :  25;   // ms dark gap between steps
   const modeLabel = isReg ? 'Registering' : 'Verifying';
 
   await setMaxBrightness();   // max screen brightness for strongest illumination
@@ -427,7 +429,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     const result = analyzeLiveness(frames);
     showResult(result);
   } catch (err) {
-    unlockExposure(); stopCamera(); releaseWakeLock(); restoreBrightness();
+    unlockCameraSettings(); stopCamera(); releaseWakeLock(); restoreBrightness();
     alert('Camera error: ' + err.message);
     showScreen('register');
   }
@@ -445,7 +447,7 @@ document.getElementById('btn-verify').addEventListener('click', async () => {
     const result = analyzeLiveness(frames, storedTemplate);
     showResult(result);
   } catch (err) {
-    unlockExposure(); stopCamera(); releaseWakeLock(); restoreBrightness();
+    unlockCameraSettings(); stopCamera(); releaseWakeLock(); restoreBrightness();
     alert('Camera error: ' + err.message);
     showScreen('start');
   }

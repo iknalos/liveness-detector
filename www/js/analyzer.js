@@ -143,16 +143,16 @@ function analyzeLiveness(frames, template = null) {
   const hasFace = meanLum > 0.02;
 
   // ── Check 6: Hemoglobin dip ─────────────────────────────────────────────────
+  // Oxyhemoglobin absorbs at 540-560nm, creating a dip between the 520 and 580
+  // peaks. Uses only 520/550/580nm so the check fires in both registration (24
+  // steps) and verification (12 steps — 535nm and 565nm are skipped there).
   const f520 = frames.find(f => f.step.nm === 520);
-  const f535 = frames.find(f => f.step.nm === 535);
   const f550 = frames.find(f => f.step.nm === 550);
-  const f565 = frames.find(f => f.step.nm === 565);
   const f580 = frames.find(f => f.step.nm === 580);
   let hemoScore = 0;
-  if (f520 && f535 && f550 && f565 && f580) {
+  if (f520 && f550 && f580) {
     const surround = (f520.data.brightness + f580.data.brightness) / 2;
-    const mid      = (f535.data.brightness + f550.data.brightness + f565.data.brightness) / 3;
-    hemoScore = mid < surround ? 1 : 0;
+    hemoScore = f550.data.brightness < surround ? 1 : 0;
   }
 
   // ── Liveness score (0–100) ──────────────────────────────────────────────────
