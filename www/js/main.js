@@ -82,30 +82,40 @@ async function restoreBrightness() {
   } catch (_) {}
 }
 
-// ── Exposure lock ─────────────────────────────────────────────────────────────
-// Locks camera AE at the current exposure setting so all frames in a scan
-// (dark reference + spectral steps) are captured at identical gain.
-// Without this, AE adjusts per-frame and the ambient correction ratios are
-// computed across inconsistent scales — invalidating the flat-field math.
-async function lockExposure() {
+// ── Camera settings lock ──────────────────────────────────────────────────────
+// Locks AE, AWB, and AF together before the spectral scan.
+//
+// AWB is the most critical: when we flash red, AWB "corrects" by reducing
+// the red channel gain — directly destroying the spectral measurement.
+// AE ensures all frames share the same gain (required for flat-field math).
+// AF prevents hunting between dark flashes.
+//
+// All three are locked at values the camera settled on under the mid-grey
+// pre-conditioning flash, then released after the scan.
+async function lockCameraSettings() {
   if (!cameraStream) return;
   const track = cameraStream.getVideoTracks()[0];
   try {
     const cap = track.getCapabilities();
-    if (cap.exposureMode && cap.exposureMode.includes('manual')) {
-      const s = track.getSettings();
-      await track.applyConstraints({
-        advanced: [{ exposureMode: 'manual', exposureTime: s.exposureTime }],
-      });
-    }
+    const s   = track.getSettings();
+    const c   = {};
+    if (cap.exposureMode?.includes('manual'))    { c.exposureMode    = 'manual'; }
+    if (s.exposureTime    !== undefined)          { c.exposureTime    = s.exposureTime; }
+    if (cap.whiteBalanceMode?.includes('manual')) { c.whiteBalanceMode = 'manual'; }
+    if (s.colorTemperature !== undefined)         { c.colorTemperature = s.colorTemperature; }
+    if (cap.focusMode?.includes('manual'))        { c.focusMode       = 'manual'; }
+    if (s.focusDistance   !== undefined)          { c.focusDistance   = s.focusDistance; }
+    if (Object.keys(c).length) await track.applyConstraints({ advanced: [c] });
   } catch (_) {}
 }
 
-async function unlockExposure() {
+async function unlockCameraSettings() {
   if (!cameraStream) return;
   const track = cameraStream.getVideoTracks()[0];
   try {
-    await track.applyConstraints({ advanced: [{ exposureMode: 'continuous' }] });
+    await track.applyConstraints({
+      advanced: [{ exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous' }],
+    });
   } catch (_) {}
 }
 
@@ -188,17 +198,36 @@ async function captureRawData() {
   return extractFaceData(ctx.getImageData(0, 0, w, h), w, h);
 }
 
+// Average multiple rapid frame grabs to reduce sensor noise.
+// 15ms between samples ensures we pull distinct frames from the camera pipeline.
+async function captureAveragedData(count = 3) {
+  const samples = [];
+  for (let k = 0; k < count; k++) {
+    if (k > 0) await sleep(15);
+    samples.push(await captureRawData());
+  }
+  const n = samples.length;
+  return {
+    r:          samples.reduce((s, d) => s + d.r,          0) / n,
+    g:          samples.reduce((s, d) => s + d.g,          0) / n,
+    b:          samples.reduce((s, d) => s + d.b,          0) / n,
+    brightness: samples.reduce((s, d) => s + d.brightness, 0) / n,
+  };
+}
+
 async function captureFrame(step) {
-  return { step, data: await captureRawData() };
+  return { step, data: await captureAveragedData(3) };
 }
 
 // Capture ambient reference with screen black.
 // On AMOLED (S21 Ultra) #000000 = pixels off = true black, so this measures
 // ambient light only, with no screen contribution.
+// 5-sample average for the reference since it's used as denominator in every
+// subsequent correction — noise here propagates to all 12/24 spectral frames.
 async function captureDarkFrame() {
   await setFlashColor('#000000');
-  await sleep(500); // AE settle on the dark scene
-  const data = await captureRawData();
+  await sleep(500);
+  const data = await captureAveragedData(5);
   flashBg.style.opacity = '0';
   return data;
 }
@@ -255,10 +284,11 @@ async function runScan() {
   await setFlashColor('#606060');
   await sleep(700);           // let AE fully settle at this brightness level
 
-  // Step 2: Lock exposure so every subsequent frame — dark ref and all spectral
-  //         steps — is captured at identical gain. This is required for the
-  //         (spectral - ambient) / ambient flat-field correction to be valid.
-  await lockExposure();
+  // Step 2: Lock AE + AWB + AF so every subsequent frame — dark ref and all
+  //         spectral steps — is captured with identical gain and white balance.
+  //         AWB lock is critical: without it the camera silently reduces the
+  //         red channel when we flash red, destroying the spectral signal.
+  await lockCameraSettings();
 
   // Step 3: Capture ambient reference with screen black.
   //         On AMOLED (S21 Ultra) #000000 = pixels off = true zero screen emission.
@@ -296,7 +326,7 @@ async function runScan() {
   await sleep(300);
 
   flashBg.style.opacity = '0';
-  await unlockExposure();     // restore AE before handing camera back to user
+  await unlockCameraSettings();     // restore AE before handing camera back to user
   await restoreBrightness();  // back to user's normal brightness
   return frames;
 }
