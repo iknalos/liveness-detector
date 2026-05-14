@@ -33,10 +33,10 @@ function cosineSimilarity(a, b) {
 
 function buildTemplate(frames) {
   const maxLum = Math.max(...frames.map(f => f.data.brightness));
-  if (maxLum < 8) return null; // no usable signal
+  if (maxLum < 0.05) return null; // no usable signal after ambient correction
 
   return {
-    version: 1,
+    version: 2, // v2 = ambient-corrected ratio values (not raw 0-255)
     createdAt: new Date().toISOString(),
     curve: frames.map(f => ({
       nm:  f.step.nm,
@@ -70,7 +70,7 @@ function compareTemplate(frames, template) {
   if (matched.length < 6) return 0;
 
   const maxLum = Math.max(...matched.map(m => m.frame.data.brightness));
-  if (maxLum < 8) return 0;
+  if (maxLum < 0.05) return 0;
 
   const curLum = matched.map(m => m.frame.data.brightness / maxLum);
   const curR   = matched.map(m => m.frame.data.r          / maxLum);
@@ -105,10 +105,12 @@ function analyzeLiveness(frames, template = null) {
   const iG = frames.map(f => f.step.rgb[1] / 255);
   const iB = frames.map(f => f.step.rgb[2] / 255);
 
-  const fR   = frames.map(f => f.data.r          / 255);
-  const fG   = frames.map(f => f.data.g          / 255);
-  const fB   = frames.map(f => f.data.b          / 255);
-  const fLum = frames.map(f => f.data.brightness / 255);
+  // Frame data is ambient-corrected ratios (dimensionless) — no /255 needed.
+  // Pearson correlation and downstream checks are all scale-invariant.
+  const fR   = frames.map(f => f.data.r);
+  const fG   = frames.map(f => f.data.g);
+  const fB   = frames.map(f => f.data.b);
+  const fLum = frames.map(f => f.data.brightness);
 
   // ── Check 1: Spectral tracking correlation ──────────────────────────────────
   const corrR   = pearsonCorrelation(iR, fR);
@@ -118,7 +120,7 @@ function analyzeLiveness(frames, template = null) {
 
   // ── Check 2: Spectral variance ──────────────────────────────────────────────
   const maxL = Math.max(...fLum), minL = Math.min(...fLum);
-  const spectralVariance = maxL > 0.05 ? (maxL - minL) / maxL : 0;
+  const spectralVariance = maxL > 0.005 ? (maxL - minL) / maxL : 0;
 
   // ── Check 3: Red > blue bias ────────────────────────────────────────────────
   const redFrames  = frames.filter(f => f.step.nm >= 620 && f.step.nm <= 680);
@@ -135,8 +137,10 @@ function analyzeLiveness(frames, template = null) {
   const warmBias = avgWarm > avgCool;
 
   // ── Check 5: Face presence ──────────────────────────────────────────────────
+  // With ambient correction, values are ratios not 0-1; check for any positive
+  // screen contribution (ratio > 0.02 means face is reflecting screen light).
   const meanLum = fLum.reduce((a, b) => a + b, 0) / n;
-  const hasFace = meanLum > 0.07 && meanLum < 0.93;
+  const hasFace = meanLum > 0.02;
 
   // ── Check 6: Hemoglobin dip ─────────────────────────────────────────────────
   const f520 = frames.find(f => f.step.nm === 520);

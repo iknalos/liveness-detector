@@ -30,7 +30,9 @@ const pipContainer  = document.getElementById('pip-container');
 function loadTemplate() {
   try {
     const raw = localStorage.getItem(TEMPLATE_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const t = JSON.parse(raw);
+    return t.version === 2 ? t : null; // v1 templates used raw 0-255 values; invalidate
   } catch { return null; }
 }
 
@@ -143,12 +145,10 @@ function drawToCanvas(source) {
   return { ctx, w, h };
 }
 
-async function captureFrame(step) {
+async function captureRawData() {
   let ctx, w, h;
-
   if (imageCapture) {
     try {
-      // grabFrame() pulls the freshest frame directly from the camera pipeline
       const bitmap = await imageCapture.grabFrame();
       ({ ctx, w, h } = drawToCanvas(bitmap));
       bitmap.close();
@@ -158,8 +158,36 @@ async function captureFrame(step) {
   } else {
     ({ ctx, w, h } = drawToCanvas(videoEl));
   }
+  return extractFaceData(ctx.getImageData(0, 0, w, h), w, h);
+}
 
-  return { step, data: extractFaceData(ctx.getImageData(0, 0, w, h), w, h) };
+async function captureFrame(step) {
+  return { step, data: await captureRawData() };
+}
+
+// Capture ambient reference with screen black.
+// On AMOLED (S21 Ultra) #000000 = pixels off = true black, so this measures
+// ambient light only, with no screen contribution.
+async function captureDarkFrame() {
+  await setFlashColor('#000000');
+  await sleep(500); // AE settle on the dark scene
+  const data = await captureRawData();
+  flashBg.style.opacity = '0';
+  return data;
+}
+
+// Flat-field correction: (spectral - ambient) / ambient
+// Gives the relative gain from screen illumination vs ambient baseline.
+// Result is ambient- and intensity-invariant — only the spectral SHAPE matters.
+function applyAmbientCorrection(data, ambient) {
+  const FLOOR = 4; // prevent div-by-zero in very dark channels
+  const aR = Math.max(ambient.r, FLOOR);
+  const aG = Math.max(ambient.g, FLOOR);
+  const aB = Math.max(ambient.b, FLOOR);
+  const r = Math.max(0, data.r - ambient.r) / aR;
+  const g = Math.max(0, data.g - ambient.g) / aG;
+  const b = Math.max(0, data.b - ambient.b) / aB;
+  return { r, g, b, brightness: (r + g + b) / 3 };
 }
 
 // Sync a screen-color change to the display's refresh cycle.
@@ -190,9 +218,16 @@ async function runScan() {
   videoEl.classList.add('pip');
   pipContainer.style.display = 'block';
   faceGuide.style.opacity    = '1';
-  stepLabel.textContent      = 'Hold still…';
+  stepLabel.textContent      = 'Calibrating ambient light…';
   stepCounter.textContent    = `0 / ${colors.length}`;
   progressBar.style.width    = '0%';
+
+  // Dark-frame reference: screen black → camera sees only ambient light.
+  // Every spectral frame is then corrected by (spectral - ambient) / ambient,
+  // isolating the screen's contribution and normalising out the ambient spectrum.
+  const ambientRef = await captureDarkFrame();
+  stepLabel.textContent = 'Hold still…';
+  await sleep(150);
 
   for (let i = 0; i < colors.length; i++) {
     const step = colors[i];
@@ -209,8 +244,9 @@ async function runScan() {
     // ② Wait for camera auto-exposure to settle on the new illumination
     await sleep(flashMs);
 
-    // ③ Grab the freshest frame (ImageCapture API when available)
-    frames.push(await captureFrame(step));
+    // ③ Grab the freshest frame and apply flat-field ambient correction
+    const raw = await captureFrame(step);
+    frames.push({ step: raw.step, data: applyAmbientCorrection(raw.data, ambientRef) });
 
     // ④ Dark gap — prevents colour from the current step bleeding into the next
     flashBg.style.opacity = '0';
