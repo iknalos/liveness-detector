@@ -13,6 +13,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
@@ -24,6 +29,11 @@ jobs:
 
       - name: Install Android build tools
         run: sdkmanager "build-tools;34.0.0" "platforms;android-34"
+
+      - name: Install dependencies and sync Capacitor
+        run: |
+          npm install
+          npx cap sync android
 
       - name: Make gradlew executable
         run: chmod +x android/gradlew
