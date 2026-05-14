@@ -6,6 +6,7 @@ const IDENTITY_THRESH = 0.88; // cosine similarity required to match
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let cameraStream    = null;
+let imageCapture    = null;   // ImageCapture API for precise frame grabs
 let wakeLock        = null;
 let scanMode        = 'verify';   // 'register' | 'verify'
 let storedTemplate  = null;
@@ -76,6 +77,14 @@ async function startCamera() {
     videoEl.onerror = rej;
   });
   await videoEl.play();
+
+  // Set up ImageCapture for precise single-frame grabs if available
+  const videoTrack = cameraStream.getVideoTracks()[0];
+  if ('ImageCapture' in window) {
+    try { imageCapture = new ImageCapture(videoTrack); } catch (_) {}
+  }
+
+  // Wait for camera AE/AWB to settle on the initial scene
   await sleep(600);
 }
 
@@ -84,6 +93,7 @@ function stopCamera() {
     cameraStream.getTracks().forEach(t => t.stop());
     cameraStream = null;
   }
+  imageCapture = null;
 }
 
 // ── Frame capture ─────────────────────────────────────────────────────────────
@@ -104,7 +114,7 @@ function extractFaceData(imgData, w, h) {
   return { r, g, b, brightness: (r + g + b) / 3 };
 }
 
-function captureFrame(step) {
+function drawToCanvas(source) {
   const w = videoEl.videoWidth  || 640;
   const h = videoEl.videoHeight || 480;
   captureCanvas.width  = w;
@@ -113,9 +123,40 @@ function captureFrame(step) {
   ctx.save();
   ctx.translate(w, 0);
   ctx.scale(-1, 1);
-  ctx.drawImage(videoEl, 0, 0);
+  ctx.drawImage(source, 0, 0, w, h);
   ctx.restore();
+  return { ctx, w, h };
+}
+
+async function captureFrame(step) {
+  let ctx, w, h;
+
+  if (imageCapture) {
+    try {
+      // grabFrame() pulls the freshest frame directly from the camera pipeline
+      const bitmap = await imageCapture.grabFrame();
+      ({ ctx, w, h } = drawToCanvas(bitmap));
+      bitmap.close();
+    } catch (_) {
+      ({ ctx, w, h } = drawToCanvas(videoEl));
+    }
+  } else {
+    ({ ctx, w, h } = drawToCanvas(videoEl));
+  }
+
   return { step, data: extractFaceData(ctx.getImageData(0, 0, w, h), w, h) };
+}
+
+// Sync a screen-color change to the display's refresh cycle.
+// Two nested RAFs: first queues the paint, second confirms it rendered.
+function setFlashColor(hex) {
+  return new Promise(resolve => {
+    requestAnimationFrame(() => {
+      flashBg.style.backgroundColor = hex;
+      flashBg.style.opacity = '1';
+      requestAnimationFrame(resolve);
+    });
+  });
 }
 
 // ── Scan loop (shared by both register and verify) ────────────────────────────
@@ -139,16 +180,22 @@ async function runScan() {
   for (let i = 0; i < colors.length; i++) {
     const step = colors[i];
 
-    flashBg.style.backgroundColor = step.hex;
-    flashBg.style.opacity          = '1';
+    // ① Sync color to display refresh — guarantees the screen is actually
+    //   showing the new color before we start the AE-settle timer.
+    await setFlashColor(step.hex);
 
+    // Update status text after the flash is live
     stepLabel.textContent   = `${modeLabel} · ${step.name} ${step.nm} nm`;
     stepCounter.textContent = `${i + 1} / ${colors.length}`;
     progressBar.style.width = `${((i + 1) / colors.length) * 100}%`;
 
+    // ② Wait for camera auto-exposure to settle on the new illumination
     await sleep(flashMs);
-    frames.push(captureFrame(step));
 
+    // ③ Grab the freshest frame (ImageCapture API when available)
+    frames.push(await captureFrame(step));
+
+    // ④ Dark gap — prevents colour from the current step bleeding into the next
     flashBg.style.opacity = '0';
     await sleep(gapMs);
   }
