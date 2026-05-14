@@ -9,74 +9,103 @@
 </head>
 <body>
 
-  <!-- ═══════════════════════════════════════════════════════════════
-       SCREEN 1 — Start
-  ═══════════════════════════════════════════════════════════════ -->
-  <div id="screen-start" class="screen active">
+  <!-- ═══════════════════════════════════════════════════
+       SCREEN 1 — Register (first launch only)
+  ═══════════════════════════════════════════════════ -->
+  <div id="screen-register" class="screen">
     <div class="start-inner">
       <div class="logo-ring">
         <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
-          <!-- Spectral arc segments -->
-          <circle cx="40" cy="40" r="34" fill="none" stroke="#7B00D4" stroke-width="6" stroke-dasharray="12 4"
-                  transform="rotate(-90 40 40)" opacity="0.8"/>
-          <circle cx="40" cy="40" r="26" fill="none" stroke="#0088FF" stroke-width="4" stroke-dasharray="9 3"
-                  transform="rotate(30 40 40)" opacity="0.7"/>
-          <circle cx="40" cy="40" r="18" fill="none" stroke="#00FF88" stroke-width="3" stroke-dasharray="7 3"
-                  transform="rotate(60 40 40)" opacity="0.6"/>
-          <!-- Eye icon -->
+          <circle cx="40" cy="40" r="34" fill="none" stroke="#7B00D4" stroke-width="6"
+                  stroke-dasharray="12 4" transform="rotate(-90 40 40)" opacity="0.8"/>
+          <circle cx="40" cy="40" r="26" fill="none" stroke="#0088FF" stroke-width="4"
+                  stroke-dasharray="9 3"  transform="rotate(30 40 40)"  opacity="0.7"/>
+          <circle cx="40" cy="40" r="18" fill="none" stroke="#00FF88" stroke-width="3"
+                  stroke-dasharray="7 3"  transform="rotate(60 40 40)"  opacity="0.6"/>
           <ellipse cx="40" cy="40" rx="10" ry="7" fill="none" stroke="white" stroke-width="1.5"/>
           <circle cx="40" cy="40" r="3.5" fill="white"/>
         </svg>
       </div>
 
-      <h1>Liveness<br><span class="gradient-text">Check</span></h1>
-      <p class="subtitle">
-        24-step spectral scan · 400–750 nm<br>
-        Detects real faces vs. photos &amp; screens
-      </p>
+      <h1>Register<br><span class="gradient-text">Your Face</span></h1>
+      <p class="subtitle">Create your spectral identity template. This only needs to be done once.</p>
 
       <div class="how-it-works">
         <div class="how-row">
-          <div class="how-icon" style="background:#7B00D4">💡</div>
-          <div class="how-text">Screen flashes 24 colors across the full visible spectrum</div>
+          <div class="how-icon" style="background:#7B00D4">🌈</div>
+          <div class="how-text">24-colour spectral scan captures your unique skin signature</div>
         </div>
         <div class="how-row">
-          <div class="how-icon" style="background:#0055FF">📷</div>
-          <div class="how-text">Front camera captures your face under each illumination</div>
+          <div class="how-icon" style="background:#0055FF">💾</div>
+          <div class="how-text">Saved locally on your device — never uploaded anywhere</div>
         </div>
         <div class="how-row">
-          <div class="how-icon" style="background:#22c55e">🔬</div>
-          <div class="how-text">Skin reflectance signature confirms a live human face</div>
+          <div class="how-icon" style="background:#22c55e">🔒</div>
+          <div class="how-text">Future verifications compare against this template</div>
         </div>
       </div>
 
-      <button id="btn-start" class="btn-primary">Start Scan</button>
-
-      <p class="hint">Best in a dim room · Keep phone at face level · ~8 seconds</p>
+      <button id="btn-register" class="btn-primary">Register My Face</button>
+      <p class="hint">Stand in a dim room · Face at phone level · ~8 seconds</p>
     </div>
   </div>
 
 
-  <!-- ═══════════════════════════════════════════════════════════════
-       SCREEN 2 — Scan
-  ═══════════════════════════════════════════════════════════════ -->
+  <!-- ═══════════════════════════════════════════════════
+       SCREEN 2 — Verify (every subsequent launch)
+  ═══════════════════════════════════════════════════ -->
+  <div id="screen-start" class="screen">
+    <div class="start-inner">
+      <div class="logo-ring">
+        <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="40" cy="40" r="34" fill="none" stroke="#7B00D4" stroke-width="6"
+                  stroke-dasharray="12 4" transform="rotate(-90 40 40)" opacity="0.8"/>
+          <circle cx="40" cy="40" r="26" fill="none" stroke="#0088FF" stroke-width="4"
+                  stroke-dasharray="9 3"  transform="rotate(30 40 40)"  opacity="0.7"/>
+          <circle cx="40" cy="40" r="18" fill="none" stroke="#00FF88" stroke-width="3"
+                  stroke-dasharray="7 3"  transform="rotate(60 40 40)"  opacity="0.6"/>
+          <ellipse cx="40" cy="40" rx="10" ry="7" fill="none" stroke="white" stroke-width="1.5"/>
+          <circle cx="40" cy="40" r="3.5" fill="white"/>
+        </svg>
+      </div>
+
+      <h1>Verify<br><span class="gradient-text">Identity</span></h1>
+      <p class="subtitle">Multispectral liveness + identity check · 400–750 nm · ~8 seconds</p>
+
+      <div class="how-it-works">
+        <div class="how-row">
+          <div class="how-icon" style="background:#7B00D4">💡</div>
+          <div class="how-text">Screen flashes 24 colours across the full visible spectrum</div>
+        </div>
+        <div class="how-row">
+          <div class="how-icon" style="background:#0055FF">📷</div>
+          <div class="how-text">Camera captures spectral skin response under each colour</div>
+        </div>
+        <div class="how-row">
+          <div class="how-icon" style="background:#22c55e">🔬</div>
+          <div class="how-text">Checks liveness + matches your registered face template</div>
+        </div>
+      </div>
+
+      <button id="btn-verify" class="btn-primary">Verify Identity</button>
+      <button id="btn-reregister" class="btn-reregister">Re-register face</button>
+      <p class="hint">Best in a dim room · Keep still during the scan</p>
+    </div>
+  </div>
+
+
+  <!-- ═══════════════════════════════════════════════════
+       SCREEN 3 — Scan (shared for register & verify)
+  ═══════════════════════════════════════════════════ -->
   <div id="screen-scan" class="screen">
-
-    <!-- Full-screen spectral flash layer -->
     <div id="flash-bg"></div>
-
-    <!-- Camera feed (full-screen during positioning, PiP during scan) -->
     <video id="camera-feed" autoplay playsinline muted></video>
-
-    <!-- Hidden canvas for pixel capture -->
     <canvas id="capture-canvas" style="display:none;"></canvas>
 
-    <!-- PiP label (shown only when video is in PiP mode) -->
     <div id="pip-container" style="display:none;">
       <span class="pip-label">Your face</span>
     </div>
 
-    <!-- Face-guide oval -->
     <div id="face-guide" style="opacity:0;">
       <svg viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg">
         <ellipse cx="100" cy="130" rx="78" ry="108"
@@ -85,7 +114,6 @@
       </svg>
     </div>
 
-    <!-- Status bar at bottom -->
     <div id="scan-footer">
       <div id="step-label">Preparing camera…</div>
       <div id="progress-track">
@@ -93,29 +121,38 @@
       </div>
       <div id="step-counter">0 / 24</div>
     </div>
-
   </div>
 
 
-  <!-- ═══════════════════════════════════════════════════════════════
-       SCREEN 3 — Result
-  ═══════════════════════════════════════════════════════════════ -->
+  <!-- ═══════════════════════════════════════════════════
+       SCREEN 4 — Result
+  ═══════════════════════════════════════════════════ -->
   <div id="screen-result" class="screen">
     <div class="result-inner">
       <div id="result-icon" class="result-icon"></div>
       <h2 id="result-title"></h2>
 
+      <!-- Liveness score -->
       <div class="score-block">
-        <div class="score-label">Confidence score</div>
+        <div class="score-label">Liveness Score</div>
         <div class="score-track">
           <div id="result-score-bar"></div>
         </div>
         <div id="result-score-value" class="score-value"></div>
       </div>
 
+      <!-- Identity match score (hidden during registration) -->
+      <div id="identity-block" class="score-block" style="display:none;">
+        <div class="score-label">Identity Match</div>
+        <div class="score-track">
+          <div id="identity-score-bar"></div>
+        </div>
+        <div id="identity-score-value" class="score-value"></div>
+      </div>
+
       <div id="result-details" class="result-details"></div>
 
-      <button id="btn-retry" class="btn-primary btn-outline">Scan Again</button>
+      <button id="btn-retry" class="btn-primary btn-outline">Continue</button>
     </div>
   </div>
 

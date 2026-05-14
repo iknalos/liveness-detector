@@ -1,46 +1,70 @@
 'use strict';
 
-// ── State ────────────────────────────────────────────────────────────────────
-let cameraStream = null;
-let wakeLock     = null;
+// ── Constants ─────────────────────────────────────────────────────────────────
+const TEMPLATE_KEY    = 'liveness_face_template';
+const IDENTITY_THRESH = 0.88; // cosine similarity required to match
 
-// ── DOM refs ─────────────────────────────────────────────────────────────────
-const screenStart  = document.getElementById('screen-start');
-const screenScan   = document.getElementById('screen-scan');
-const screenResult = document.getElementById('screen-result');
+// ── State ─────────────────────────────────────────────────────────────────────
+let cameraStream    = null;
+let wakeLock        = null;
+let scanMode        = 'verify';   // 'register' | 'verify'
+let storedTemplate  = null;
 
-const videoEl        = document.getElementById('camera-feed');
-const captureCanvas  = document.getElementById('capture-canvas');
-const flashBg        = document.getElementById('flash-bg');
-const progressBar    = document.getElementById('progress-bar');
-const stepLabel      = document.getElementById('step-label');
-const stepCounter    = document.getElementById('step-counter');
-const faceGuide      = document.getElementById('face-guide');
-const pipContainer   = document.getElementById('pip-container');
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const screenRegister = document.getElementById('screen-register');
+const screenStart    = document.getElementById('screen-start');
+const screenScan     = document.getElementById('screen-scan');
+const screenResult   = document.getElementById('screen-result');
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const videoEl       = document.getElementById('camera-feed');
+const captureCanvas = document.getElementById('capture-canvas');
+const flashBg       = document.getElementById('flash-bg');
+const progressBar   = document.getElementById('progress-bar');
+const stepLabel     = document.getElementById('step-label');
+const stepCounter   = document.getElementById('step-counter');
+const faceGuide     = document.getElementById('face-guide');
+const pipContainer  = document.getElementById('pip-container');
 
-function showScreen(name) {
-  [screenStart, screenScan, screenResult].forEach(s => s.classList.remove('active'));
-  if (name === 'start')  screenStart .classList.add('active');
-  if (name === 'scan')   screenScan  .classList.add('active');
-  if (name === 'result') screenResult.classList.add('active');
+// ── Template persistence ──────────────────────────────────────────────────────
+function loadTemplate() {
+  try {
+    const raw = localStorage.getItem(TEMPLATE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
 }
+
+function saveTemplate(template) {
+  localStorage.setItem(TEMPLATE_KEY, JSON.stringify(template));
+}
+
+function clearTemplate() {
+  localStorage.removeItem(TEMPLATE_KEY);
+}
+
+// ── Screen routing ────────────────────────────────────────────────────────────
+function showScreen(name) {
+  [screenRegister, screenStart, screenScan, screenResult]
+    .forEach(s => s.classList.remove('active'));
+  const map = { register: screenRegister, start: screenStart,
+                scan: screenScan,         result: screenResult };
+  if (map[name]) map[name].classList.add('active');
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function acquireWakeLock() {
   try {
-    if ('wakeLock' in navigator) {
+    if ('wakeLock' in navigator)
       wakeLock = await navigator.wakeLock.request('screen');
-    }
-  } catch (_) { /* unsupported — ignore */ }
+  } catch (_) {}
 }
 
 function releaseWakeLock() {
   if (wakeLock) { wakeLock.release(); wakeLock = null; }
 }
 
-// ── Camera ───────────────────────────────────────────────────────────────────
+// ── Camera ────────────────────────────────────────────────────────────────────
 async function startCamera() {
   cameraStream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -52,7 +76,6 @@ async function startCamera() {
     videoEl.onerror = rej;
   });
   await videoEl.play();
-  // Extra frame buffer to let AE/AWB settle a bit
   await sleep(600);
 }
 
@@ -65,10 +88,8 @@ function stopCamera() {
 
 // ── Frame capture ─────────────────────────────────────────────────────────────
 function extractFaceData(imgData, w, h) {
-  // Center crop — in selfie mode the face occupies roughly the inner 40%×48%
   const x1 = Math.floor(w * 0.30), x2 = Math.floor(w * 0.70);
   const y1 = Math.floor(h * 0.20), y2 = Math.floor(h * 0.68);
-
   let tR = 0, tG = 0, tB = 0, cnt = 0;
   for (let y = y1; y < y2; y++) {
     for (let x = x1; x < x2; x++) {
@@ -89,52 +110,46 @@ function captureFrame(step) {
   captureCanvas.width  = w;
   captureCanvas.height = h;
   const ctx = captureCanvas.getContext('2d');
-  // Mirror to align with how the video is displayed
   ctx.save();
   ctx.translate(w, 0);
   ctx.scale(-1, 1);
   ctx.drawImage(videoEl, 0, 0);
   ctx.restore();
-  const imgData = ctx.getImageData(0, 0, w, h);
-  return { step, data: extractFaceData(imgData, w, h) };
+  return { step, data: extractFaceData(ctx.getImageData(0, 0, w, h), w, h) };
 }
 
-// ── Main scan loop ────────────────────────────────────────────────────────────
+// ── Scan loop (shared by both register and verify) ────────────────────────────
 async function runScan() {
   const frames = [];
   const total  = SPECTRAL_COLORS.length;
+  const modeLabel = scanMode === 'register' ? 'Registering' : 'Verifying';
 
-  // Switch to PiP camera view + show flash background
   videoEl.classList.add('pip');
   pipContainer.style.display = 'block';
-  faceGuide.style.opacity = '1';
-  stepLabel.textContent   = 'Hold still — scanning...';
-  progressBar.style.width = '0%';
+  faceGuide.style.opacity    = '1';
+  stepLabel.textContent      = 'Hold still…';
+  progressBar.style.width    = '0%';
 
   for (let i = 0; i < total; i++) {
     const step = SPECTRAL_COLORS[i];
 
-    // ① Flash the screen with this spectral color
     flashBg.style.backgroundColor = step.hex;
     flashBg.style.opacity          = '1';
 
-    // ② Update status UI
-    stepLabel.textContent  = `${step.name}  ${step.nm} nm`;
+    stepLabel.textContent   = `${modeLabel} · ${step.name} ${step.nm} nm`;
     stepCounter.textContent = `${i + 1} / ${total}`;
     progressBar.style.width = `${((i + 1) / total) * 100}%`;
 
-    // ③ Wait: screen renders → camera adjusts exposure → stable frame
     await sleep(300);
-
-    // ④ Capture frame
     frames.push(captureFrame(step));
 
-    // ⑤ Brief dark gap to avoid color bleeding into next step
     flashBg.style.opacity = '0';
     await sleep(70);
   }
 
-  stepLabel.textContent = 'Analysing spectral signature…';
+  stepLabel.textContent = scanMode === 'register'
+    ? 'Building your spectral template…'
+    : 'Analysing identity…';
   await sleep(400);
 
   flashBg.style.opacity = '0';
@@ -147,49 +162,144 @@ function showResult(result) {
   releaseWakeLock();
   showScreen('result');
 
-  document.getElementById('result-icon').textContent =
-    result.isLive ? '✅' : '❌';
+  const iconEl       = document.getElementById('result-icon');
+  const titleEl      = document.getElementById('result-title');
+  const livenessBar  = document.getElementById('result-score-bar');
+  const livenessVal  = document.getElementById('result-score-value');
+  const detailsEl    = document.getElementById('result-details');
+  const idBlock      = document.getElementById('identity-block');
+  const idBar        = document.getElementById('identity-score-bar');
+  const idVal        = document.getElementById('identity-score-value');
+  const retryBtn     = document.getElementById('btn-retry');
 
-  const titleEl = document.getElementById('result-title');
-  titleEl.textContent  = result.isLive ? 'Live Person Confirmed' : 'Liveness Check Failed';
-  titleEl.style.color  = result.isLive ? '#22c55e' : '#ef4444';
+  // ── Registration result ────────────────────────────────────────────────────
+  if (scanMode === 'register') {
+    if (result.isLive) {
+      const template = buildTemplate(window._lastFrames);
+      if (template) {
+        saveTemplate(template);
+        storedTemplate = template;
+      }
+      iconEl.textContent   = '✅';
+      titleEl.textContent  = 'Face Registered!';
+      titleEl.style.color  = '#22c55e';
+      livenessBar.style.background = 'linear-gradient(90deg,#22c55e,#86efac)';
+      retryBtn.textContent = 'Continue to Verify';
+    } else {
+      iconEl.textContent   = '❌';
+      titleEl.textContent  = 'Registration Failed';
+      titleEl.style.color  = '#ef4444';
+      livenessBar.style.background = 'linear-gradient(90deg,#ef4444,#fca5a5)';
+      retryBtn.textContent = 'Try Again';
+    }
+    idBlock.style.display = 'none';
 
-  const bar = document.getElementById('result-score-bar');
-  bar.style.background = result.isLive
-    ? 'linear-gradient(90deg,#22c55e,#86efac)'
-    : 'linear-gradient(90deg,#ef4444,#fca5a5)';
-  // Animate after paint
+  // ── Verification result ────────────────────────────────────────────────────
+  } else {
+    if (result.passed) {
+      iconEl.textContent  = '✅';
+      titleEl.textContent = 'Identity Verified';
+      titleEl.style.color = '#22c55e';
+    } else if (!result.isLive) {
+      iconEl.textContent  = '❌';
+      titleEl.textContent = 'Liveness Check Failed';
+      titleEl.style.color = '#ef4444';
+    } else {
+      iconEl.textContent  = '❌';
+      titleEl.textContent = 'Identity Mismatch';
+      titleEl.style.color = '#f97316';
+    }
+
+    livenessBar.style.background = result.isLive
+      ? 'linear-gradient(90deg,#22c55e,#86efac)'
+      : 'linear-gradient(90deg,#ef4444,#fca5a5)';
+
+    // Identity block
+    idBlock.style.display = 'flex';
+    if (result.identity) {
+      idBar.style.background = result.identity.isMatch
+        ? 'linear-gradient(90deg,#3b82f6,#93c5fd)'
+        : 'linear-gradient(90deg,#f97316,#fdba74)';
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        idBar.style.width  = `${result.identity.score}%`;
+        idVal.textContent  = `${result.identity.score} / 100`;
+      }));
+    }
+    retryBtn.textContent = 'Try Again';
+  }
+
+  // Animate liveness bar
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    bar.style.width = `${result.score}%`;
+    livenessBar.style.width = `${result.score}%`;
+    livenessVal.textContent = `${result.score} / 100`;
   }));
 
-  document.getElementById('result-score-value').textContent = `${result.score} / 100`;
-
-  document.getElementById('result-details').innerHTML =
-    result.reasons.map(r => `<div class="reason-row">${r}</div>`).join('');
+  detailsEl.innerHTML = result.reasons
+    .map(r => `<div class="reason-row">${r}</div>`).join('');
 }
 
 // ── Button handlers ───────────────────────────────────────────────────────────
-document.getElementById('btn-start').addEventListener('click', async () => {
+
+// Register screen → start registration scan
+document.getElementById('btn-register').addEventListener('click', async () => {
+  scanMode = 'register';
   showScreen('scan');
   try {
     await acquireWakeLock();
     await startCamera();
     const frames = await runScan();
-    const result  = analyzeLiveness(frames);
+    window._lastFrames = frames;
+    const result = analyzeLiveness(frames);
     showResult(result);
   } catch (err) {
-    stopCamera();
-    releaseWakeLock();
-    alert('Error: ' + err.message + '\n\nEnsure camera permission is granted.');
+    stopCamera(); releaseWakeLock();
+    alert('Camera error: ' + err.message);
+    showScreen('register');
+  }
+});
+
+// Start/verify screen → start verification scan
+document.getElementById('btn-verify').addEventListener('click', async () => {
+  scanMode = 'verify';
+  showScreen('scan');
+  try {
+    await acquireWakeLock();
+    await startCamera();
+    const frames = await runScan();
+    window._lastFrames = frames;
+    const result = analyzeLiveness(frames, storedTemplate);
+    showResult(result);
+  } catch (err) {
+    stopCamera(); releaseWakeLock();
+    alert('Camera error: ' + err.message);
     showScreen('start');
   }
 });
 
+// Re-register link
+document.getElementById('btn-reregister').addEventListener('click', () => {
+  clearTemplate();
+  storedTemplate = null;
+  showScreen('register');
+});
+
+// Result screen retry / continue
 document.getElementById('btn-retry').addEventListener('click', () => {
-  // Reset scan UI state
-  document.getElementById('result-score-bar').style.width = '0%';
+  // Reset bars
+  document.getElementById('result-score-bar').style.width    = '0%';
+  document.getElementById('identity-score-bar').style.width  = '0%';
   videoEl.classList.remove('pip');
   pipContainer.style.display = 'none';
-  showScreen('start');
+
+  if (scanMode === 'register' && !storedTemplate) {
+    showScreen('register');
+  } else if (scanMode === 'register' && storedTemplate) {
+    showScreen('start');  // registration succeeded → go to verify
+  } else {
+    showScreen('start');
+  }
 });
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+storedTemplate = loadTemplate();
+showScreen(storedTemplate ? 'start' : 'register');
