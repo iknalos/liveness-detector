@@ -60,18 +60,27 @@ function buildTemplate(frames) {
 // Different person → different curve shape → low score (< 0.80)
 
 function compareTemplate(frames, template) {
-  const maxLum = Math.max(...frames.map(f => f.data.brightness));
+  // Match frames to template entries by wavelength — handles the case where
+  // verification uses a 12-step subset of the 24-step registration template.
+  const matched = frames.map(f => {
+    const ref = template.curve.find(c => c.nm === f.step.nm);
+    return ref ? { frame: f, ref } : null;
+  }).filter(Boolean);
+
+  if (matched.length < 6) return 0;
+
+  const maxLum = Math.max(...matched.map(m => m.frame.data.brightness));
   if (maxLum < 8) return 0;
 
-  const curLum = frames.map(f => f.data.brightness / maxLum);
-  const curR   = frames.map(f => f.data.r          / maxLum);
-  const curG   = frames.map(f => f.data.g          / maxLum);
-  const curB   = frames.map(f => f.data.b          / maxLum);
+  const curLum = matched.map(m => m.frame.data.brightness / maxLum);
+  const curR   = matched.map(m => m.frame.data.r          / maxLum);
+  const curG   = matched.map(m => m.frame.data.g          / maxLum);
+  const curB   = matched.map(m => m.frame.data.b          / maxLum);
 
-  const refLum = template.curve.map(c => c.lum);
-  const refR   = template.curve.map(c => c.r);
-  const refG   = template.curve.map(c => c.g);
-  const refB   = template.curve.map(c => c.b);
+  const refLum = matched.map(m => m.ref.lum);
+  const refR   = matched.map(m => m.ref.r);
+  const refG   = matched.map(m => m.ref.g);
+  const refB   = matched.map(m => m.ref.b);
 
   const simLum = cosineSimilarity(curLum, refLum);
   const simR   = cosineSimilarity(curR,   refR);

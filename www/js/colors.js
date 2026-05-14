@@ -1,4 +1,5 @@
 // 24 spectral steps evenly distributed from 400nm to 745nm (~15nm apart)
+// Used for registration — full spectrum for maximum template quality.
 // RGB values are approximate screen-reproducible colors for each wavelength band.
 // Screens can't emit monochromatic light, but each step produces a distinct
 // illumination spectrum — the relative skin reflectance under each is what matters.
@@ -29,3 +30,8 @@ const SPECTRAL_COLORS = [
   { nm: 730, hex: '#550000', rgb: [ 85,   0,   0], name: 'Near-IR 3'    },
   { nm: 745, hex: '#330000', rgb: [ 51,   0,   0], name: 'Near-IR 4'    },
 ];
+
+// 12 key steps for fast verification — every other step from SPECTRAL_COLORS.
+// Covers all critical zones (blue absorption, hemoglobin dip, red peak, near-IR)
+// at half the count for ~3-4 second scans.
+const VERIFY_COLORS = SPECTRAL_COLORS.filter((_, i) => i % 2 === 0);

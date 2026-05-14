@@ -119,38 +119,44 @@ function captureFrame(step) {
 }
 
 // ── Scan loop (shared by both register and verify) ────────────────────────────
+// Registration: 24 steps × 340ms  ≈ 9 seconds  (high quality template)
+// Verification: 12 steps × 240ms  ≈ 3-4 seconds (fast daily check)
 async function runScan() {
-  const frames = [];
-  const total  = SPECTRAL_COLORS.length;
-  const modeLabel = scanMode === 'register' ? 'Registering' : 'Verifying';
+  const frames    = [];
+  const isReg     = scanMode === 'register';
+  const colors    = isReg ? SPECTRAL_COLORS : VERIFY_COLORS;
+  const flashMs   = isReg ? 280 : 200;   // ms screen stays on per step
+  const gapMs     = isReg ?  60 :  40;   // ms dark gap between steps
+  const modeLabel = isReg ? 'Registering' : 'Verifying';
 
   videoEl.classList.add('pip');
   pipContainer.style.display = 'block';
   faceGuide.style.opacity    = '1';
   stepLabel.textContent      = 'Hold still…';
+  stepCounter.textContent    = `0 / ${colors.length}`;
   progressBar.style.width    = '0%';
 
-  for (let i = 0; i < total; i++) {
-    const step = SPECTRAL_COLORS[i];
+  for (let i = 0; i < colors.length; i++) {
+    const step = colors[i];
 
     flashBg.style.backgroundColor = step.hex;
     flashBg.style.opacity          = '1';
 
     stepLabel.textContent   = `${modeLabel} · ${step.name} ${step.nm} nm`;
-    stepCounter.textContent = `${i + 1} / ${total}`;
-    progressBar.style.width = `${((i + 1) / total) * 100}%`;
+    stepCounter.textContent = `${i + 1} / ${colors.length}`;
+    progressBar.style.width = `${((i + 1) / colors.length) * 100}%`;
 
-    await sleep(320);
+    await sleep(flashMs);
     frames.push(captureFrame(step));
 
     flashBg.style.opacity = '0';
-    await sleep(80);
+    await sleep(gapMs);
   }
 
-  stepLabel.textContent = scanMode === 'register'
+  stepLabel.textContent = isReg
     ? 'Building your spectral template…'
     : 'Analysing identity…';
-  await sleep(400);
+  await sleep(300);
 
   flashBg.style.opacity = '0';
   return frames;
