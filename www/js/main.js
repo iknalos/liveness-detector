@@ -65,6 +65,21 @@ function releaseWakeLock() {
   if (wakeLock) { wakeLock.release(); wakeLock = null; }
 }
 
+// ── Brightness control ────────────────────────────────────────────────────────
+// Uses our custom BrightnessPlugin (Java) via Capacitor bridge.
+// Only affects this app's window — no system permission needed.
+async function setMaxBrightness() {
+  try {
+    await Capacitor.Plugins.Brightness.setBrightness({ brightness: 1.0 });
+  } catch (_) {}
+}
+
+async function restoreBrightness() {
+  try {
+    await Capacitor.Plugins.Brightness.resetBrightness();
+  } catch (_) {}
+}
+
 // ── Camera ────────────────────────────────────────────────────────────────────
 async function startCamera() {
   cameraStream = await navigator.mediaDevices.getUserMedia({
@@ -170,6 +185,8 @@ async function runScan() {
   const gapMs     = isReg ?  60 :  40;   // ms dark gap between steps
   const modeLabel = isReg ? 'Registering' : 'Verifying';
 
+  await setMaxBrightness();   // max screen brightness for strongest illumination
+
   videoEl.classList.add('pip');
   pipContainer.style.display = 'block';
   faceGuide.style.opacity    = '1';
@@ -206,6 +223,7 @@ async function runScan() {
   await sleep(300);
 
   flashBg.style.opacity = '0';
+  await restoreBrightness();  // back to user's normal brightness
   return frames;
 }
 
@@ -305,7 +323,7 @@ document.getElementById('btn-register').addEventListener('click', async () => {
     const result = analyzeLiveness(frames);
     showResult(result);
   } catch (err) {
-    stopCamera(); releaseWakeLock();
+    stopCamera(); releaseWakeLock(); restoreBrightness();
     alert('Camera error: ' + err.message);
     showScreen('register');
   }
@@ -323,7 +341,7 @@ document.getElementById('btn-verify').addEventListener('click', async () => {
     const result = analyzeLiveness(frames, storedTemplate);
     showResult(result);
   } catch (err) {
-    stopCamera(); releaseWakeLock();
+    stopCamera(); releaseWakeLock(); restoreBrightness();
     alert('Camera error: ' + err.message);
     showScreen('start');
   }
