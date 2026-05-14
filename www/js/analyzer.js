@@ -130,11 +130,15 @@ function analyzeLiveness(frames, template = null) {
   const redBlueBias = avgBlueLum > 0 ? avgRedLum / avgBlueLum : 1;
 
   // ── Check 4: Warm > cool ────────────────────────────────────────────────────
+  // Real skin reflects warm wavelengths (≥580nm) more than cool (<580nm) due
+  // to melanin and haemoglobin absorption in the blue-green range.
+  // After ambient correction the ambient spectral bias is already removed, so
+  // this ratio reflects genuine skin optical properties, not lighting.
   const warmFrames = frames.filter(f => f.step.nm >= 580);
   const coolFrames = frames.filter(f => f.step.nm <  580);
   const avgWarm = warmFrames.reduce((s, f) => s + f.data.brightness, 0) / (warmFrames.length || 1);
   const avgCool = coolFrames.reduce((s, f) => s + f.data.brightness, 0) / (coolFrames.length || 1);
-  const warmBias = avgWarm > avgCool;
+  const warmRatio = avgCool > 0.001 ? avgWarm / avgCool : 1;
 
   // ── Check 5: Face presence ──────────────────────────────────────────────────
   // With ambient correction, values are ratios not 0-1; check for any positive
@@ -143,16 +147,20 @@ function analyzeLiveness(frames, template = null) {
   const hasFace = meanLum > 0.02;
 
   // ── Check 6: Hemoglobin dip ─────────────────────────────────────────────────
-  // Oxyhemoglobin absorbs at 540-560nm, creating a dip between the 520 and 580
-  // peaks. Uses only 520/550/580nm so the check fires in both registration (24
-  // steps) and verification (12 steps — 535nm and 565nm are skipped there).
+  // Oxyhemoglobin absorbs at ~540-560nm, creating a reflectance dip between
+  // the 520nm and 580nm peaks. All five wavelengths are now in VERIFY_COLORS
+  // (dense hemoglobin-region sampling, indices 8-16 in the new SPECTRAL_COLORS),
+  // so this check fires in both registration and verification scans.
   const f520 = frames.find(f => f.step.nm === 520);
+  const f535 = frames.find(f => f.step.nm === 535);
   const f550 = frames.find(f => f.step.nm === 550);
+  const f565 = frames.find(f => f.step.nm === 565);
   const f580 = frames.find(f => f.step.nm === 580);
   let hemoScore = 0;
-  if (f520 && f550 && f580) {
+  if (f520 && f535 && f550 && f565 && f580) {
     const surround = (f520.data.brightness + f580.data.brightness) / 2;
-    hemoScore = f550.data.brightness < surround ? 1 : 0;
+    const mid      = (f535.data.brightness + f550.data.brightness + f565.data.brightness) / 3;
+    hemoScore = mid < surround ? 1 : 0;
   }
 
   // ── Liveness score (0–100) ──────────────────────────────────────────────────
@@ -171,9 +179,12 @@ function analyzeLiveness(frames, template = null) {
   score += biasPts;
   reasons.push(`Red/blue ratio: ${redBlueBias.toFixed(2)}x (+${biasPts})`);
 
-  if (hasFace)   { score += 12; reasons.push('Face region detected (+12)');          }
-  if (warmBias)  { score +=  6; reasons.push('Warm spectral bias confirmed (+6)');   }
-  if (hemoScore) { score +=  4; reasons.push('Hemoglobin signature detected (+4)');  }
+  const warmPts = Math.round(Math.max(0, Math.min(6, (warmRatio - 1.0) * 12)));
+  score += warmPts;
+
+  if (hasFace)   { score += 12; reasons.push('Face region detected (+12)');                              }
+  if (warmPts)   { reasons.push(`Warm/cool ratio: ${warmRatio.toFixed(2)}x (+${warmPts})`);              }
+  if (hemoScore) { score +=  4; reasons.push('Hemoglobin absorption signature detected (+4)');           }
 
   score = Math.min(100, Math.round(score));
   const isLive = score >= 58;
@@ -184,7 +195,7 @@ function analyzeLiveness(frames, template = null) {
     const similarity  = compareTemplate(frames, template);
     // Map similarity 0.70–1.00 → score 0–100
     const idScore     = Math.round(Math.max(0, Math.min(100, (similarity - 0.70) / 0.30 * 100)));
-    const isMatch     = similarity >= 0.88;
+    const isMatch     = similarity >= IDENTITY_THRESH;
     identity = { similarity, score: idScore, isMatch };
   }
 

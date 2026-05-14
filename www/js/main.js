@@ -171,9 +171,15 @@ function extractFaceData(imgData, w, h) {
 function drawToCanvas(source) {
   const w = videoEl.videoWidth  || 640;
   const h = videoEl.videoHeight || 480;
-  captureCanvas.width  = w;
-  captureCanvas.height = h;
-  const ctx = captureCanvas.getContext('2d');
+  // Only reset dimensions when they actually change — resizing clears the buffer
+  // and is expensive. Camera resolution is constant within a session.
+  if (captureCanvas.width !== w || captureCanvas.height !== h) {
+    captureCanvas.width  = w;
+    captureCanvas.height = h;
+  }
+  // willReadFrequently: tells the browser to keep this canvas in CPU memory so
+  // getImageData() doesn't require a GPU→CPU transfer on every call.
+  const ctx = captureCanvas.getContext('2d', { willReadFrequently: true });
   ctx.save();
   ctx.translate(w, 0);
   ctx.scale(-1, 1);
@@ -259,10 +265,11 @@ function setFlashColor(hex) {
 }
 
 // ── Scan loop (shared by both register and verify) ────────────────────────────
-// AE/AWB/AF are locked before the loop, so flashMs only needs to cover camera
-// pipeline flush (~2-3 frames at 30fps = 67-100ms), not AE convergence.
-// Registration: 24 steps × 155ms  ≈ 5-6 seconds  (high quality template)
-// Verification: 12 steps × 125ms  ≈ 2-3 seconds  (fast daily check)
+// AE/AWB/AF are locked before the loop so flashMs only needs to cover camera
+// pipeline flush (~2-3 frames at 30fps). Per-step time includes the flush,
+// 3-frame averaging (2 × 40ms gaps), and the inter-step dark gap.
+// Registration: 24 steps × ~235ms + ~1.5s setup  ≈  7s total
+// Verification: 12 steps × ~205ms + ~1.5s setup  ≈  4s total
 async function runScan() {
   const frames    = [];
   const isReg     = scanMode === 'register';
@@ -282,7 +289,7 @@ async function runScan() {
 
   // ── Exposure lock + dark reference ─────────────────────────────────────────
   // Step 1: Flash mid-grey to drive AE to a stable mid-range gain that works
-  //         for both the dim near-IR steps and the bright yellow/green steps.
+  //         for both the dim dark-red steps and the bright yellow/green steps.
   await setFlashColor('#606060');
   await sleep(700);           // let AE fully settle at this brightness level
 
@@ -310,7 +317,7 @@ async function runScan() {
     stepCounter.textContent = `${i + 1} / ${colors.length}`;
     progressBar.style.width = `${((i + 1) / colors.length) * 100}%`;
 
-    // ② Wait for camera auto-exposure to settle on the new illumination
+    // ② Flush stale frames from the camera pipeline (AE/AWB are locked)
     await sleep(flashMs);
 
     // ③ Grab the freshest frame and apply flat-field ambient correction
