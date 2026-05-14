@@ -140,11 +140,11 @@ async function runScan() {
     stepCounter.textContent = `${i + 1} / ${total}`;
     progressBar.style.width = `${((i + 1) / total) * 100}%`;
 
-    await sleep(300);
+    await sleep(320);
     frames.push(captureFrame(step));
 
     flashBg.style.opacity = '0';
-    await sleep(70);
+    await sleep(80);
   }
 
   stepLabel.textContent = scanMode === 'register'
