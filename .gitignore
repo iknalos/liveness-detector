@@ -4,4 +4,8 @@ android/build/
 android/app/build/
 android/local.properties
 *.keystore
+*.p12
 .DS_Store
+# copied from node_modules by scripts/vendor.js
+www/vendor/
+test/e2e/out/

@@ -1,489 +1,538 @@
 'use strict';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const TEMPLATE_KEY    = 'liveness_face_template';
-const IDENTITY_THRESH = 0.88; // cosine similarity required to match
+const TEMPLATE_KEY = 'liveness_template_v3';
+const OLD_TEMPLATE_KEYS = ['liveness_face_template'];   // spectral-only templates from v1/v2
+const CROP = 128;                // analysis crop, pixels square
+const FACE_MIN = 0.30, FACE_MAX = 0.78;   // face width as a share of the frame width
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let cameraStream    = null;
-let imageCapture    = null;   // ImageCapture API for precise frame grabs
-let wakeLock        = null;
-let scanMode        = 'verify';   // 'register' | 'verify'
-let storedTemplate  = null;
+let cameraStream = null;
+let wakeLock = null;
+let scanMode = 'verify';         // 'register' | 'verify'
+let storedTemplate = null;
+let cancelled = false;
+let lastReport = null;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const screenRegister = document.getElementById('screen-register');
-const screenStart    = document.getElementById('screen-start');
-const screenScan     = document.getElementById('screen-scan');
-const screenResult   = document.getElementById('screen-result');
-
-const videoEl       = document.getElementById('camera-feed');
-const captureCanvas = document.getElementById('capture-canvas');
-const flashBg       = document.getElementById('flash-bg');
-const progressBar   = document.getElementById('progress-bar');
-const stepLabel     = document.getElementById('step-label');
-const stepCounter   = document.getElementById('step-counter');
-const faceGuide     = document.getElementById('face-guide');
-const pipContainer  = document.getElementById('pip-container');
+const $ = id => document.getElementById(id);
+const screens = { register: $('screen-register'), start: $('screen-start'), scan: $('screen-scan'), result: $('screen-result') };
+const videoEl = $('camera-feed');
+const flashEl = $('flash');
+const hintEl = $('scan-hint');
+const guideEl = $('face-guide');
+const progressEl = $('scan-progress');
+const progressBar = $('scan-progress-bar');
 
 // ── Template persistence ──────────────────────────────────────────────────────
 function loadTemplate() {
   try {
+    OLD_TEMPLATE_KEYS.forEach(k => localStorage.removeItem(k));
     const raw = localStorage.getItem(TEMPLATE_KEY);
     if (!raw) return null;
     const t = JSON.parse(raw);
-    return t.version === 2 ? t : null; // v1 templates used raw 0-255 values; invalidate
+    return t.version === 3 && Array.isArray(t.descriptor) ? t : null;
   } catch { return null; }
 }
-
-function saveTemplate(template) {
-  localStorage.setItem(TEMPLATE_KEY, JSON.stringify(template));
-}
-
-function clearTemplate() {
-  localStorage.removeItem(TEMPLATE_KEY);
-}
+const saveTemplate = t => localStorage.setItem(TEMPLATE_KEY, JSON.stringify(t));
+const clearTemplate = () => localStorage.removeItem(TEMPLATE_KEY);
 
 // ── Screen routing ────────────────────────────────────────────────────────────
 function showScreen(name) {
-  [screenRegister, screenStart, screenScan, screenResult]
-    .forEach(s => s.classList.remove('active'));
-  const map = { register: screenRegister, start: screenStart,
-                scan: screenScan,         result: screenResult };
-  if (map[name]) map[name].classList.add('active');
+  Object.values(screens).forEach(s => s.classList.remove('active'));
+  screens[name].classList.add('active');
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const nextFrame = () => new Promise(r => requestAnimationFrame(r));
+class Cancelled extends Error {}
+const checkCancel = () => { if (cancelled) throw new Cancelled('cancelled'); };
 
 async function acquireWakeLock() {
-  try {
-    if ('wakeLock' in navigator)
-      wakeLock = await navigator.wakeLock.request('screen');
-  } catch (_) {}
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
 }
+function releaseWakeLock() { if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; } }
 
-function releaseWakeLock() {
-  if (wakeLock) { wakeLock.release(); wakeLock = null; }
-}
-
-// ── Brightness control ────────────────────────────────────────────────────────
-// Uses our custom BrightnessPlugin (Java) via Capacitor bridge.
-// Only affects this app's window — no system permission needed.
-async function setMaxBrightness() {
-  try {
-    await Capacitor.Plugins.Brightness.setBrightness({ brightness: 1.0 });
-  } catch (_) {}
-}
-
-async function restoreBrightness() {
-  try {
-    await Capacitor.Plugins.Brightness.resetBrightness();
-  } catch (_) {}
-}
-
-// ── Camera settings lock ──────────────────────────────────────────────────────
-// Locks AE, AWB, and AF together before the spectral scan.
-//
-// AWB is the most critical: when we flash red, AWB "corrects" by reducing
-// the red channel gain — directly destroying the spectral measurement.
-// AE ensures all frames share the same gain (required for flat-field math).
-// AF prevents hunting between dark flashes.
-//
-// All three are locked at values the camera settled on under the mid-grey
-// pre-conditioning flash, then released after the scan.
-async function lockCameraSettings() {
-  if (!cameraStream) return;
-  const track = cameraStream.getVideoTracks()[0];
-  try {
-    const cap = track.getCapabilities();
-    const s   = track.getSettings();
-    const c   = {};
-    if (cap.exposureMode?.includes('manual'))    { c.exposureMode    = 'manual'; }
-    if (s.exposureTime    !== undefined)          { c.exposureTime    = s.exposureTime; }
-    if (cap.whiteBalanceMode?.includes('manual')) { c.whiteBalanceMode = 'manual'; }
-    if (s.colorTemperature !== undefined)         { c.colorTemperature = s.colorTemperature; }
-    if (cap.focusMode?.includes('manual'))        { c.focusMode       = 'manual'; }
-    if (s.focusDistance   !== undefined)          { c.focusDistance   = s.focusDistance; }
-    if (Object.keys(c).length) await track.applyConstraints({ advanced: [c] });
-  } catch (_) {}
-}
-
-async function unlockCameraSettings() {
-  if (!cameraStream) return;
-  const track = cameraStream.getVideoTracks()[0];
-  try {
-    await track.applyConstraints({
-      advanced: [{ exposureMode: 'continuous', whiteBalanceMode: 'continuous', focusMode: 'continuous' }],
-    });
-  } catch (_) {}
-}
+// Our BrightnessPlugin (Java): affects only this window, no system permission needed.
+const plugins = () => (window.Capacitor && window.Capacitor.Plugins) || {};
+async function setMaxBrightness() { try { await plugins().Brightness.setBrightness({ brightness: 1.0 }); } catch (_) {} }
+async function restoreBrightness() { try { await plugins().Brightness.resetBrightness(); } catch (_) {} }
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 async function startCamera() {
   cameraStream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+    video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
     audio: false,
   });
   videoEl.srcObject = cameraStream;
-  await new Promise((res, rej) => {
-    videoEl.onloadedmetadata = res;
-    videoEl.onerror = rej;
-  });
+  await new Promise((res, rej) => { videoEl.onloadedmetadata = res; videoEl.onerror = rej; });
   await videoEl.play();
-
-  // Set up ImageCapture for precise single-frame grabs if available
-  const videoTrack = cameraStream.getVideoTracks()[0];
-  if ('ImageCapture' in window) {
-    try { imageCapture = new ImageCapture(videoTrack); } catch (_) {}
-  }
-
-  // Wait for camera AE/AWB to settle on the initial scene
-  await sleep(600);
 }
 
 function stopCamera() {
-  if (cameraStream) {
-    cameraStream.getTracks().forEach(t => t.stop());
-    cameraStream = null;
-  }
-  imageCapture = null;
+  if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
+  videoEl.srcObject = null;
 }
 
-// ── Frame capture ─────────────────────────────────────────────────────────────
-function extractFaceData(imgData, w, h) {
-  const x1 = Math.floor(w * 0.30), x2 = Math.floor(w * 0.70);
-  const y1 = Math.floor(h * 0.20), y2 = Math.floor(h * 0.68);
-  let tR = 0, tG = 0, tB = 0, cnt = 0;
-  for (let y = y1; y < y2; y++) {
-    for (let x = x1; x < x2; x++) {
-      const i = (y * w + x) * 4;
-      tR += imgData.data[i];
-      tG += imgData.data[i + 1];
-      tB += imgData.data[i + 2];
-      cnt++;
-    }
-  }
-  const r = tR / cnt, g = tG / cnt, b = tB / cnt;
-  return { r, g, b, brightness: (r + g + b) / 3 };
-}
-
-function drawToCanvas(source) {
-  const w = videoEl.videoWidth  || 640;
-  const h = videoEl.videoHeight || 480;
-  // Only reset dimensions when they actually change — resizing clears the buffer
-  // and is expensive. Camera resolution is constant within a session.
-  if (captureCanvas.width !== w || captureCanvas.height !== h) {
-    captureCanvas.width  = w;
-    captureCanvas.height = h;
-  }
-  // willReadFrequently: tells the browser to keep this canvas in CPU memory so
-  // getImageData() doesn't require a GPU→CPU transfer on every call.
-  const ctx = captureCanvas.getContext('2d', { willReadFrequently: true });
-  ctx.save();
-  ctx.translate(w, 0);
-  ctx.scale(-1, 1);
-  ctx.drawImage(source, 0, 0, w, h);
-  ctx.restore();
-  return { ctx, w, h };
-}
-
-async function captureRawData() {
-  let ctx, w, h;
-  if (imageCapture) {
-    try {
-      const bitmap = await imageCapture.grabFrame();
-      ({ ctx, w, h } = drawToCanvas(bitmap));
-      bitmap.close();
-    } catch (_) {
-      ({ ctx, w, h } = drawToCanvas(videoEl));
-    }
-  } else {
-    ({ ctx, w, h } = drawToCanvas(videoEl));
-  }
-  return extractFaceData(ctx.getImageData(0, 0, w, h), w, h);
-}
-
-// Average multiple frame grabs to reduce sensor noise.
-// 40ms between samples guarantees distinct frames at 30fps (frame period = 33ms).
-async function captureAveragedData(count = 3) {
-  const samples = [];
-  for (let k = 0; k < count; k++) {
-    if (k > 0) await sleep(40);
-    samples.push(await captureRawData());
-  }
-  const n = samples.length;
+function cameraInfo() {
+  const track = cameraStream && cameraStream.getVideoTracks()[0];
+  if (!track) return {};
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  const s = track.getSettings ? track.getSettings() : {};
   return {
-    r:          samples.reduce((s, d) => s + d.r,          0) / n,
-    g:          samples.reduce((s, d) => s + d.g,          0) / n,
-    b:          samples.reduce((s, d) => s + d.b,          0) / n,
-    brightness: samples.reduce((s, d) => s + d.brightness, 0) / n,
+    label: track.label, width: s.width, height: s.height, frameRate: s.frameRate,
+    whiteBalanceModes: caps.whiteBalanceMode, exposureModes: caps.exposureMode,
+    whiteBalanceMode: s.whiteBalanceMode, exposureMode: s.exposureMode,
   };
 }
 
-async function captureFrame(step) {
-  return { step, data: await captureAveragedData(3) };
+// White balance is locked for the scan so the camera can't "correct away" the red flash.
+// Chromium maps 'manual' white balance to Camera2's AWB lock, which holds the current gains.
+// Exposure is deliberately NOT locked: Chromium's 'manual' exposure switches auto-exposure
+// off and resets ISO to a default, which made the old version's frames jump in brightness.
+// The analysis instead compares patterns of equal brightness and subtracts a black frame
+// taken a moment earlier and later, so slow exposure changes cancel out.
+async function lockWhiteBalance() {
+  const track = cameraStream && cameraStream.getVideoTracks()[0];
+  if (!track || !track.getCapabilities) return false;
+  try {
+    const caps = track.getCapabilities();
+    if (!caps.whiteBalanceMode || !caps.whiteBalanceMode.includes('manual')) return false;
+    await track.applyConstraints({ advanced: [{ whiteBalanceMode: 'manual' }] });
+    return true;
+  } catch (_) { return false; }
+}
+async function unlockWhiteBalance(locked) {
+  if (!locked || !cameraStream) return;
+  try { await cameraStream.getVideoTracks()[0].applyConstraints({ advanced: [{ whiteBalanceMode: 'continuous' }] }); } catch (_) {}
 }
 
-// Capture ambient reference with screen black.
-// On AMOLED (S21 Ultra) #000000 = pixels off = true black, so this measures
-// ambient light only, with no screen contribution.
-// 5-sample average for the reference since it's used as denominator in every
-// subsequent correction — noise here propagates to all 12/24 spectral frames.
-async function captureDarkFrame() {
-  await setFlashColor('#000000');
-  await sleep(500);
-  const data = await captureAveragedData(5);
-  flashBg.style.opacity = '0';
-  return data;
+// Copies the face region of every new camera frame into a small buffer, with its timestamps.
+function startSampler(crop) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = CROP;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const frames = [];
+  let active = true;
+  const grab = times => {
+    ctx.drawImage(videoEl, crop.x, crop.y, crop.side, crop.side, 0, 0, CROP, CROP);
+    frames.push({ times, data: ctx.getImageData(0, 0, CROP, CROP).data });
+  };
+  if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+    const cb = (now, meta) => {
+      if (!active) return;
+      grab({ cap: meta.captureTime, disp: meta.expectedDisplayTime, now });
+      videoEl.requestVideoFrameCallback(cb);
+    };
+    videoEl.requestVideoFrameCallback(cb);
+  } else {
+    let last = -1;
+    const loop = now => {
+      if (!active) return;
+      if (videoEl.currentTime !== last) { last = videoEl.currentTime; grab({ now }); }
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }
+  return { frames, stop: () => { active = false; } };
 }
 
-// Flat-field correction: (spectral - ambient) / ambient
-// Gives the relative gain from screen illumination vs ambient baseline.
-// Result is ambient- and intensity-invariant — only the spectral SHAPE matters.
-function applyAmbientCorrection(data, ambient) {
-  const FLOOR = 4; // prevent div-by-zero in very dark channels
-  const aR = Math.max(ambient.r, FLOOR);
-  const aG = Math.max(ambient.g, FLOOR);
-  const aB = Math.max(ambient.b, FLOOR);
-  const r = Math.max(0, data.r - ambient.r) / aR;
-  const g = Math.max(0, data.g - ambient.g) / aG;
-  const b = Math.max(0, data.b - ambient.b) / aB;
-  return { r, g, b, brightness: (r + g + b) / 3 };
-}
-
-// Sync a screen-color change to the display's refresh cycle.
-// Two nested RAFs: first queues the paint, second confirms it rendered.
-function setFlashColor(hex) {
+// Median time between camera frames, measured while the user lines up.
+function measureFrameInterval(ms = 700) {
   return new Promise(resolve => {
-    requestAnimationFrame(() => {
-      flashBg.style.backgroundColor = hex;
-      flashBg.style.opacity = '1';
-      requestAnimationFrame(resolve);
-    });
+    if (!('requestVideoFrameCallback' in HTMLVideoElement.prototype)) return resolve(33);
+    const ts = [];
+    const t0 = performance.now();
+    const cb = now => {
+      ts.push(now);
+      if (now - t0 < ms) videoEl.requestVideoFrameCallback(cb);
+      else {
+        const d = ts.slice(1).map((t, i) => t - ts[i]).sort((a, b) => a - b);
+        resolve(d.length ? d[d.length >> 1] : 33);
+      }
+    };
+    videoEl.requestVideoFrameCallback(cb);
   });
 }
 
-// ── Scan loop (shared by both register and verify) ────────────────────────────
-// AE/AWB/AF are locked before the loop so flashMs only needs to cover camera
-// pipeline flush (~2-3 frames at 30fps). Per-step time includes the flush,
-// 3-frame averaging (2 × 40ms gaps), and the inter-step dark gap.
-// Registration: 24 steps × ~235ms + ~1.5s setup  ≈  7s total
-// Verification: 12 steps × ~205ms + ~1.5s setup  ≈  4s total
-async function runScan() {
-  const frames    = [];
-  const isReg     = scanMode === 'register';
-  const colors    = isReg ? SPECTRAL_COLORS : VERIFY_COLORS;
-  const flashMs   = isReg ? 120 : 100;   // ms screen stays on per step
-  const gapMs     = isReg ?  35 :  25;   // ms dark gap between steps
-  const modeLabel = isReg ? 'Registering' : 'Verifying';
-
-  await setMaxBrightness();   // max screen brightness for strongest illumination
-
-  videoEl.classList.add('pip');
-  pipContainer.style.display = 'block';
-  faceGuide.style.opacity    = '1';
-  stepLabel.textContent      = 'Calibrating…';
-  stepCounter.textContent    = `0 / ${colors.length}`;
-  progressBar.style.width    = '0%';
-
-  // ── Exposure lock + dark reference ─────────────────────────────────────────
-  // Step 1: Flash mid-grey to drive AE to a stable mid-range gain that works
-  //         for both the dim dark-red steps and the bright yellow/green steps.
-  await setFlashColor('#606060');
-  await sleep(700);           // let AE fully settle at this brightness level
-
-  // Step 2: Lock AE + AWB + AF so every subsequent frame — dark ref and all
-  //         spectral steps — is captured with identical gain and white balance.
-  //         AWB lock is critical: without it the camera silently reduces the
-  //         red channel when we flash red, destroying the spectral signal.
-  await lockCameraSettings();
-
-  // Step 3: Capture ambient reference with screen black.
-  //         On AMOLED (S21 Ultra) #000000 = pixels off = true zero screen emission.
-  const ambientRef = await captureDarkFrame();
-  stepLabel.textContent = 'Hold still…';
-  await sleep(150);
-
-  for (let i = 0; i < colors.length; i++) {
-    const step = colors[i];
-
-    // ① Sync color to display refresh — guarantees the screen is actually
-    //   showing the new color before we start the AE-settle timer.
-    await setFlashColor(step.hex);
-
-    // Update status text after the flash is live
-    stepLabel.textContent   = `${modeLabel} · ${step.name} ${step.nm} nm`;
-    stepCounter.textContent = `${i + 1} / ${colors.length}`;
-    progressBar.style.width = `${((i + 1) / colors.length) * 100}%`;
-
-    // ② Flush stale frames from the camera pipeline (AE/AWB are locked)
-    await sleep(flashMs);
-
-    // ③ Grab the freshest frame and apply flat-field ambient correction
-    const raw = await captureFrame(step);
-    frames.push({ step: raw.step, data: applyAmbientCorrection(raw.data, ambientRef) });
-
-    // ④ Dark gap — prevents colour from the current step bleeding into the next
-    flashBg.style.opacity = '0';
-    await sleep(gapMs);
+// ── Scan phases ───────────────────────────────────────────────────────────────
+async function positionFace() {
+  const descriptors = [];
+  let good = 0;
+  const t0 = performance.now();
+  while (true) {
+    checkCancel();
+    if (performance.now() - t0 > 30000) throw new Error('No face found. Make sure your face is in the oval and lit.');
+    const det = await Face.detect(videoEl, good >= 1);
+    const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+    if (!det) { good = 0; hintEl.textContent = 'Put your face in the oval'; await sleep(80); continue; }
+    const fw = det.box.w / vw;
+    const cx = (det.box.x + det.box.w / 2) / vw, cy = (det.box.y + det.box.h / 2) / vh;
+    let msg = '';
+    if (fw < FACE_MIN) msg = 'Move closer';
+    else if (fw > FACE_MAX) msg = 'Move back a little';
+    else if (Math.abs(cx - 0.5) > 0.15 || Math.abs(cy - 0.47) > 0.2) msg = 'Centre your face in the oval';
+    if (msg) { good = 0; descriptors.length = 0; hintEl.textContent = msg; continue; }
+    good++;
+    if (det.descriptor) descriptors.push(det.descriptor);
+    hintEl.textContent = 'Hold still…';
+    if (good >= 4 && descriptors.length >= 3) return { det, descriptors };
   }
+}
 
-  stepLabel.textContent = isReg
-    ? 'Building your spectral template…'
-    : 'Analysing identity…';
-  await sleep(300);
+function cropFor(box) {
+  const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+  const side = Math.min(1.6 * Math.max(box.w, box.h), vw, vh);
+  const cx = box.x + box.w / 2, cy = box.y + box.h / 2 - 0.08 * box.h;
+  return {
+    x: Math.max(0, Math.min(vw - side, cx - side / 2)),
+    y: Math.max(0, Math.min(vh - side, cy - side / 2)),
+    side,
+  };
+}
+const toCrop = (lm, crop) => lm.map(([x, y]) => [(x - crop.x) * CROP / crop.side, (y - crop.y) * CROP / crop.side]);
 
-  flashBg.style.opacity = '0';
-  await unlockCameraSettings();     // restore AE before handing camera back to user
-  await restoreBrightness();  // back to user's normal brightness
-  return frames;
+function setFlash(css, id) {
+  flashEl.style.background = css;
+  flashEl.dataset.p = id || '';
+}
+
+// Plays the sequence on display frames (requestAnimationFrame) and records when each
+// pattern went up. The camera's own lag is measured afterwards from the reflection itself.
+function playSequence(seq) {
+  return new Promise(resolve => {
+    const slots = [];
+    let i = -1, next = 0;
+    const tick = ts => {
+      if (cancelled) { resolve(slots); return; }
+      if (i < 0 || ts >= next) {
+        if (i >= 0) slots[i].t1 = ts;
+        i++;
+        if (i >= seq.length) { resolve(slots); return; }
+        setFlash(PATTERNS[seq[i].p].css, seq[i].p);
+        slots.push({ p: seq[i].p, rep: seq[i].rep, t0: ts, t1: Infinity });
+        next = ts + seq[i].ms;
+        progressBar.style.width = `${((i + 1) / seq.length) * 100}%`;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+async function detectStable(tries = 4) {
+  for (let k = 0; k < tries; k++) {
+    const d = await Face.detect(videoEl, false);
+    if (d) return d;
+    await sleep(60);
+  }
+  return null;
+}
+
+async function runScan() {
+  const t = { started: Date.now() };
+  showScreen('scan');
+  cancelled = false;
+  flashEl.hidden = true; progressEl.hidden = true; guideEl.hidden = false;
+  hintEl.hidden = false; $('btn-cancel').hidden = false;
+  hintEl.textContent = 'Starting camera…';
+  await acquireWakeLock();
+  await startCamera();
+  hintEl.textContent = 'Loading face models…';
+  await Face.load();
+
+  // 1. line up, collect the identity descriptor
+  const pos = await positionFace();
+  const frameMs = await measureFrameInterval();
+  checkCancel();
+
+  // 2. light the face evenly, lock white balance, take the landmarks
+  hintEl.hidden = true; guideEl.hidden = true; $('btn-cancel').hidden = true;
+  await setMaxBrightness();
+  setFlash('#9a9a9a', 'prep');
+  flashEl.hidden = false;
+  await sleep(650);
+  const wbLocked = await lockWhiteBalance();
+  await sleep(250);
+  const startDet = (await detectStable()) || pos.det;
+  const tStart = performance.now();
+  const crop = cropFor(startDet.box);
+
+  // 3. the flash sequence (slots last at least ~5 camera frames)
+  const slotMs = Math.round(Math.min(400, Math.max(190, 5 * frameMs)));
+  const seq = buildSequence(slotMs);
+  const sampler = startSampler(crop);
+  progressEl.hidden = false; progressBar.style.width = '0%';
+  setFlash('#000', 'K');
+  await nextFrame();
+  const slots = await playSequence(seq);
+  // the camera lags the screen: keep black up while the last frames arrive
+  setFlash('#000', 'K');
+  await sleep(700);
+  slots[slots.length - 1].t1 = performance.now();
+  sampler.stop();
+  checkCancel();
+
+  // 4. where is the face now (it must not have moved)
+  setFlash('#9a9a9a', 'prep');
+  progressEl.hidden = true;
+  await sleep(350);
+  const endDet = (await detectStable()) || startDet;
+  const tEnd = performance.now();
+  await unlockWhiteBalance(wbLocked);
+  await restoreBrightness();
+  flashEl.hidden = true;
+
+  // 5. analyse
+  const input = {
+    w: CROP, h: CROP, frames: sampler.frames, slots,
+    lmStart: toCrop(startDet.landmarks, crop), lmEnd: toCrop(endDet.landmarks, crop),
+    tStart, tEnd,
+  };
+  const analysis = Analysis.analyzeScan(input);
+  const descriptor = averageDescriptor(pos.descriptors);
+  const cam = { ...cameraInfo(), whiteBalanceLocked: wbLocked, frameMs, slotMs, crop };
+  t.ms = Date.now() - t.started;
+  return { analysis, descriptor, cam, timing: t };
+}
+
+function averageDescriptor(list) {
+  const out = new Array(128).fill(0);
+  for (const d of list) for (let i = 0; i < 128; i++) out[i] += d[i] / list.length;
+  return out;
+}
+
+function cleanup() {
+  setFlash('#000', '');
+  flashEl.hidden = true;
+  stopCamera();
+  releaseWakeLock();
+  restoreBrightness();
 }
 
 // ── Result display ────────────────────────────────────────────────────────────
-function showResult(result) {
-  stopCamera();
-  releaseWakeLock();
+const FAIL_TEXT = {
+  capture: 'The camera gave no usable frames. Try again.',
+  still: 'You (or the phone) moved during the scan. Rest your elbows and keep still for the whole flash sequence.',
+  tracking: 'The face did not reflect the random flashes in step: typical of a screen replay or a picture.',
+  coverage: 'Too little of the flash reached the face. Come closer (25–35 cm) or dim the room.',
+  emission: 'The face is far brighter than the flash can explain: a lit screen, or the room is too bright.',
+  glare: 'Mirror-like glare: a glossy photo or a phone/tablet screen.',
+  depthH: 'Side lighting found a flat surface, not a 3D face (a photo or a screen).',
+  depthV: 'Top/bottom lighting found a flat surface, not a 3D face (a photo or a screen).',
+};
+
+function showResult(scan) {
+  cleanup();
   showScreen('result');
+  const a = scan.analysis;
+  const iconEl = $('result-icon'), titleEl = $('result-title'), summaryEl = $('result-summary');
+  const bar = $('result-score-bar'), val = $('result-score-value');
+  const retry = $('btn-retry');
+  const firstFail = a.checks.find(c => !c.pass);
 
-  const iconEl       = document.getElementById('result-icon');
-  const titleEl      = document.getElementById('result-title');
-  const livenessBar  = document.getElementById('result-score-bar');
-  const livenessVal  = document.getElementById('result-score-value');
-  const detailsEl    = document.getElementById('result-details');
-  const idBlock      = document.getElementById('identity-block');
-  const idBar        = document.getElementById('identity-score-bar');
-  const idVal        = document.getElementById('identity-score-value');
-  const retryBtn     = document.getElementById('btn-retry');
-
-  // ── Registration result ────────────────────────────────────────────────────
-  if (scanMode === 'register') {
-    if (result.isLive) {
-      const template = buildTemplate(window._lastFrames);
-      if (template) {
-        saveTemplate(template);
-        storedTemplate = template;
-      }
-      iconEl.textContent   = '✅';
-      titleEl.textContent  = 'Face Registered!';
-      titleEl.style.color  = '#22c55e';
-      livenessBar.style.background = 'linear-gradient(90deg,#22c55e,#86efac)';
-      retryBtn.textContent = 'Continue to Verify';
-    } else {
-      iconEl.textContent   = '❌';
-      titleEl.textContent  = 'Registration Failed';
-      titleEl.style.color  = '#ef4444';
-      livenessBar.style.background = 'linear-gradient(90deg,#ef4444,#fca5a5)';
-      retryBtn.textContent = 'Try Again';
-    }
-    idBlock.style.display = 'none';
-
-  // ── Verification result ────────────────────────────────────────────────────
-  } else {
-    if (result.passed) {
-      iconEl.textContent  = '✅';
-      titleEl.textContent = 'Identity Verified';
-      titleEl.style.color = '#22c55e';
-    } else if (!result.isLive) {
-      iconEl.textContent  = '❌';
-      titleEl.textContent = 'Liveness Check Failed';
-      titleEl.style.color = '#ef4444';
-    } else {
-      iconEl.textContent  = '❌';
-      titleEl.textContent = 'Identity Mismatch';
-      titleEl.style.color = '#f97316';
-    }
-
-    livenessBar.style.background = result.isLive
-      ? 'linear-gradient(90deg,#22c55e,#86efac)'
-      : 'linear-gradient(90deg,#ef4444,#fca5a5)';
-
-    // Identity block
-    idBlock.style.display = 'flex';
-    if (result.identity) {
-      idBar.style.background = result.identity.isMatch
-        ? 'linear-gradient(90deg,#3b82f6,#93c5fd)'
-        : 'linear-gradient(90deg,#f97316,#fdba74)';
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        idBar.style.width  = `${result.identity.score}%`;
-        idVal.textContent  = `${result.identity.score} / 100`;
-      }));
-    }
-    retryBtn.textContent = 'Try Again';
+  let identity = null;
+  if (scanMode === 'verify' && storedTemplate) {
+    const faceDist = Analysis.descriptorDistance(scan.descriptor, storedTemplate.descriptor);
+    const specDist = storedTemplate.spectral
+      ? Analysis.spectralDistance(a.spectral.features, storedTemplate.spectral)
+      : NaN;
+    identity = {
+      faceDist, specDist,
+      faceOk: faceDist <= a.config.identityMaxDist,
+      specOk: !storedTemplate.spectral || (Number.isFinite(specDist) && specDist <= a.config.spectralMaxDist),
+    };
   }
 
-  // Animate liveness bar
+  if (scanMode === 'register') {
+    if (a.live) {
+      storedTemplate = {
+        version: 3, createdAt: new Date().toISOString(),
+        descriptor: scan.descriptor.map(v => +v.toFixed(5)),
+        spectral: a.spectral.features ? a.spectral.features.map(v => +v.toFixed(4)) : null,
+      };
+      saveTemplate(storedTemplate);
+      setTitle('✅', 'Face registered', 'ok', 'Live face confirmed. Your face and skin spectrum are saved on this phone.');
+      retry.textContent = 'Continue to verify';
+    } else {
+      setTitle('❌', 'Not registered', 'bad', (FAIL_TEXT[firstFail.id] || '') + ' Only a live face can register.');
+      retry.textContent = 'Try again';
+    }
+  } else {
+    const passed = a.live && identity && identity.faceOk && identity.specOk;
+    if (passed) setTitle('✅', 'Identity verified', 'ok', 'Live face, and it matches the registered one.');
+    else if (!a.live) setTitle('❌', 'Liveness check failed', 'bad', FAIL_TEXT[firstFail.id] || '');
+    else if (!identity.faceOk) setTitle('⛔', 'Different person', 'warn', 'A live face, but not the registered one.');
+    else setTitle('⛔', 'Skin spectrum mismatch', 'warn', 'The face matches, but its skin reflects the screen light differently from your registration.');
+    retry.textContent = 'Try again';
+  }
+
+  function setTitle(icon, title, cls, summary) {
+    iconEl.textContent = icon;
+    titleEl.textContent = title;
+    titleEl.className = cls;
+    summaryEl.textContent = summary;
+  }
+
+  bar.style.background = a.live ? 'linear-gradient(90deg,#22c55e,#86efac)' : 'linear-gradient(90deg,#ef4444,#fca5a5)';
+  bar.style.width = '0%';
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    livenessBar.style.width = `${result.score}%`;
-    livenessVal.textContent = `${result.score} / 100`;
+    bar.style.width = `${a.score}%`;
+    val.textContent = `${a.score} / 100`;
   }));
 
-  detailsEl.innerHTML = result.reasons
-    .map(r => `<div class="reason-row">${r}</div>`).join('');
+  const idBlock = $('identity-block');
+  idBlock.hidden = !identity;
+  if (identity) {
+    const fe = $('id-face'), se = $('id-spectral');
+    fe.textContent = Number.isFinite(identity.faceDist) ? `${identity.faceOk ? 'Match' : 'No match'} (${identity.faceDist.toFixed(2)})` : '—';
+    fe.className = 'id-value ' + (identity.faceOk ? 'ok' : 'bad');
+    se.textContent = storedTemplate.spectral
+      ? (Number.isFinite(identity.specDist) ? `${identity.specOk ? 'Match' : 'Differs'} (${identity.specDist.toFixed(2)})` : 'Not measured')
+      : 'Not in template';
+    se.className = 'id-value ' + (identity.specOk ? 'ok' : 'bad');
+  }
+
+  $('result-checks').innerHTML = a.checks.map(c => `
+    <div class="check-row">
+      <div class="check-mark">${c.pass ? '✅' : '❌'}</div>
+      <div class="check-label">${esc(c.label)}</div>
+      <div class="check-detail">${esc(c.detail)}</div>
+    </div>`).join('');
+
+  lastReport = buildReport(scan, identity);
+  $('diag').hidden = true;
+  $('btn-details').textContent = 'Show measurement details';
+}
+
+const esc = s => String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+function buildReport(scan, identity) {
+  const a = scan.analysis;
+  const round = v => (typeof v === 'number' && Number.isFinite(v) ? +v.toFixed(4) : v);
+  const r = (o) => JSON.parse(JSON.stringify(o, (k, v) => (typeof v === 'number' ? round(v) : v)));
+  return {
+    app: 'LivenessCheck', build: window.APP_BUILD || null, mode: scanMode, when: new Date().toISOString(),
+    live: a.live, score: a.score,
+    checks: a.checks.map(c => ({ id: c.id, pass: c.pass, detail: c.detail })),
+    metrics: r({ ...a.metrics, lagCurve: undefined }),
+    identity: identity && r(identity),
+    spectral: r(a.spectral),
+    patches: r(a.patches),
+    responses: r(a.responses),
+    camera: r(scan.cam),
+    durationMs: scan.timing.ms,
+    userAgent: navigator.userAgent,
+    analysis: scan,   // removed below; kept for maps
+  };
+}
+
+function renderDiagnostics() {
+  const scan = lastReport.analysis;
+  const a = scan.analysis;
+  const maps = a.maps;
+  if (maps) {
+    drawMap($('map-white'), maps.white, maps, 'gray');
+    drawMap($('map-horiz'), maps.horiz, maps, 'diverging');
+    drawMap($('map-vert'), maps.vert, maps, 'diverging');
+  }
+  const sp = a.spectral;
+  $('spectral-table').innerHTML = sp && sp.matrix ? `
+    <table>
+      <caption>Skin response to the screen's light (each camera channel's share from each colour)</caption>
+      <tr><th></th><th style="color:#f87171">Red light</th><th style="color:#4ade80">Green light</th><th style="color:#60a5fa">Blue light</th></tr>
+      ${['Red', 'Green', 'Blue'].map((n, c) => `<tr><th>${n} channel</th>${sp.matrix[c].map(v => `<td>${(v * 100).toFixed(1)}%</td>`).join('')}</tr>`).join('')}
+    </table>
+    <p class="diag-note">White ÷ (red + green + blue) on skin: ${Number.isFinite(a.metrics.superposition) ? a.metrics.superposition.toFixed(2) : '—'} (≈ 1 means every screen colour is just a mix of the three)</p>` : '<p class="diag-note">Spectral response not measured.</p>';
+  const { analysis, ...rest } = lastReport;
+  $('diag-json').value = JSON.stringify(rest, null, 1);
+}
+
+function drawMap(canvas, data, maps, kind) {
+  const ctx = canvas.getContext('2d');
+  canvas.width = maps.w; canvas.height = maps.h;
+  const img = ctx.createImageData(maps.w, maps.h);
+  if (!data) { ctx.fillStyle = '#111'; ctx.fillRect(0, 0, maps.w, maps.h); return; }
+  const vals = Array.from(data).filter(Number.isFinite);
+  const sorted = vals.slice().sort((x, y) => x - y);
+  const q = p => sorted[Math.floor(p * (sorted.length - 1))] || 0;
+  const lo = q(0.02), hi = q(0.98), mid = q(0.5);
+  const span = Math.max(Math.abs(hi - mid), Math.abs(mid - lo), 1e-6);
+  for (let i = 0; i < data.length; i++) {
+    const v = data[i];
+    const o = i * 4;
+    img.data[o + 3] = 255;
+    if (!Number.isFinite(v)) continue;
+    if (kind === 'gray') {
+      const g = Math.max(0, Math.min(255, 255 * (v - lo) / Math.max(hi - lo, 1e-6)));
+      img.data[o] = img.data[o + 1] = img.data[o + 2] = g;
+    } else {
+      const t = Math.max(-1, Math.min(1, (v - mid) / span));
+      img.data[o] = t > 0 ? 255 : 255 * (1 + t);
+      img.data[o + 1] = 255 * (1 - Math.abs(t)) * 0.9 + 20;
+      img.data[o + 2] = t < 0 ? 255 : 255 * (1 - t);
+    }
+  }
+  // mirror for display so it matches what the user saw in the preview
+  const tmp = document.createElement('canvas');
+  tmp.width = maps.w; tmp.height = maps.h;
+  tmp.getContext('2d').putImageData(img, 0, 0);
+  ctx.save(); ctx.translate(maps.w, 0); ctx.scale(-1, 1); ctx.drawImage(tmp, 0, 0); ctx.restore();
 }
 
 // ── Button handlers ───────────────────────────────────────────────────────────
-
-// Register screen → start registration scan
-document.getElementById('btn-register').addEventListener('click', async () => {
-  scanMode = 'register';
-  showScreen('scan');
+async function startScan(mode) {
+  scanMode = mode;
   try {
-    await acquireWakeLock();
-    await startCamera();
-    const frames = await runScan();
-    window._lastFrames = frames;
-    const result = analyzeLiveness(frames);
-    showResult(result);
+    const scan = await runScan();
+    showResult(scan);
   } catch (err) {
-    unlockCameraSettings(); stopCamera(); releaseWakeLock(); restoreBrightness();
-    alert('Camera error: ' + err.message);
-    showScreen('register');
+    cleanup();
+    if (!(err instanceof Cancelled)) alert((err && err.name === 'NotAllowedError')
+      ? 'Camera permission is needed for the scan.'
+      : 'Scan error: ' + (err && err.message ? err.message : err));
+    showScreen(storedTemplate ? 'start' : 'register');
   }
-});
+}
 
-// Start/verify screen → start verification scan
-document.getElementById('btn-verify').addEventListener('click', async () => {
-  scanMode = 'verify';
-  showScreen('scan');
-  try {
-    await acquireWakeLock();
-    await startCamera();
-    const frames = await runScan();
-    window._lastFrames = frames;
-    const result = analyzeLiveness(frames, storedTemplate);
-    showResult(result);
-  } catch (err) {
-    unlockCameraSettings(); stopCamera(); releaseWakeLock(); restoreBrightness();
-    alert('Camera error: ' + err.message);
-    showScreen('start');
-  }
-});
+$('btn-register').addEventListener('click', () => startScan('register'));
+$('btn-verify').addEventListener('click', () => startScan('verify'));
+$('btn-cancel').addEventListener('click', () => { cancelled = true; });
 
-// Re-register link
-document.getElementById('btn-reregister').addEventListener('click', () => {
+$('btn-reregister').addEventListener('click', () => {
+  if (!confirm('Delete the registered face and register again?')) return;
   clearTemplate();
   storedTemplate = null;
   showScreen('register');
 });
 
-// Result screen retry / continue
-document.getElementById('btn-retry').addEventListener('click', () => {
-  // Reset bars
-  document.getElementById('result-score-bar').style.width    = '0%';
-  document.getElementById('identity-score-bar').style.width  = '0%';
-  videoEl.classList.remove('pip');
-  pipContainer.style.display = 'none';
+$('btn-retry').addEventListener('click', () => {
+  showScreen(storedTemplate ? 'start' : 'register');
+});
 
-  if (scanMode === 'register' && !storedTemplate) {
-    showScreen('register');
-  } else if (scanMode === 'register' && storedTemplate) {
-    showScreen('start');  // registration succeeded → go to verify
-  } else {
-    showScreen('start');
-  }
+$('btn-details').addEventListener('click', () => {
+  const d = $('diag');
+  d.hidden = !d.hidden;
+  $('btn-details').textContent = d.hidden ? 'Show measurement details' : 'Hide measurement details';
+  if (!d.hidden && lastReport) renderDiagnostics();
+});
+
+$('btn-copy').addEventListener('click', async () => {
+  const ta = $('diag-json');
+  try { await navigator.clipboard.writeText(ta.value); }
+  catch (_) { ta.select(); document.execCommand('copy'); }
+  $('btn-copy').textContent = 'Copied';
+  setTimeout(() => { $('btn-copy').textContent = 'Copy report'; }, 1500);
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 storedTemplate = loadTemplate();
 showScreen(storedTemplate ? 'start' : 'register');
+Face.load().then(() => {
+  $('btn-register').disabled = false; $('btn-register').textContent = 'Register my face';
+  $('btn-verify').disabled = false; $('btn-verify').textContent = 'Verify identity';
+}).catch(err => {
+  $('btn-register').textContent = $('btn-verify').textContent = 'Face models failed to load';
+  console.error(err);
+});

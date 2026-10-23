@@ -2,162 +2,142 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0a0a0a">
   <title>LivenessCheck</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
-  <!-- ═══════════════════════════════════════════════════
-       SCREEN 1 — Register (first launch only)
-  ═══════════════════════════════════════════════════ -->
+  <!-- Update banner (shown when a newer build is released) -->
+  <div id="update-banner" hidden>
+    <div class="update-text"><strong>Update available</strong> <span id="update-version"></span></div>
+    <div class="update-progress" hidden><div id="update-bar"></div></div>
+    <div class="update-actions">
+      <button id="btn-update-later" class="btn-small btn-ghost">Later</button>
+      <button id="btn-update-now" class="btn-small">Update now</button>
+    </div>
+  </div>
+
+  <!-- ═══════════ SCREEN 1 — Register (first launch) ═══════════ -->
   <div id="screen-register" class="screen">
     <div class="start-inner">
-      <div class="logo-ring">
+      <div class="logo-ring" aria-hidden="true">
         <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="40" cy="40" r="34" fill="none" stroke="#7B00D4" stroke-width="6"
-                  stroke-dasharray="12 4" transform="rotate(-90 40 40)" opacity="0.8"/>
-          <circle cx="40" cy="40" r="26" fill="none" stroke="#0088FF" stroke-width="4"
-                  stroke-dasharray="9 3"  transform="rotate(30 40 40)"  opacity="0.7"/>
-          <circle cx="40" cy="40" r="18" fill="none" stroke="#00FF88" stroke-width="3"
-                  stroke-dasharray="7 3"  transform="rotate(60 40 40)"  opacity="0.6"/>
+          <circle cx="40" cy="40" r="34" fill="none" stroke="#ef4444" stroke-width="6" stroke-dasharray="12 4" transform="rotate(-90 40 40)" opacity="0.85"/>
+          <circle cx="40" cy="40" r="26" fill="none" stroke="#22c55e" stroke-width="4" stroke-dasharray="9 3" transform="rotate(30 40 40)" opacity="0.8"/>
+          <circle cx="40" cy="40" r="18" fill="none" stroke="#3b82f6" stroke-width="3" stroke-dasharray="7 3" transform="rotate(60 40 40)" opacity="0.8"/>
           <ellipse cx="40" cy="40" rx="10" ry="7" fill="none" stroke="white" stroke-width="1.5"/>
           <circle cx="40" cy="40" r="3.5" fill="white"/>
         </svg>
       </div>
 
       <h1>Register<br><span class="gradient-text">Your Face</span></h1>
-      <p class="subtitle">Create your spectral identity template. This only needs to be done once.</p>
+      <p class="subtitle">One live scan creates your template: your face's identity, plus how your skin reflects the screen's red, green and blue light.</p>
 
       <div class="how-it-works">
-        <div class="how-row">
-          <div class="how-icon" style="background:#7B00D4">🌈</div>
-          <div class="how-text">24-colour spectral scan captures your unique skin signature</div>
-        </div>
-        <div class="how-row">
-          <div class="how-icon" style="background:#0055FF">💾</div>
-          <div class="how-text">Saved locally on your device — never uploaded anywhere</div>
-        </div>
-        <div class="how-row">
-          <div class="how-icon" style="background:#22c55e">🔒</div>
-          <div class="how-text">Future verifications compare against this template</div>
-        </div>
+        <div class="how-row"><div class="how-icon" style="background:#7c3aed">💡</div>
+          <div class="how-text">The screen flashes red, green, blue, half-screen and striped light in a random order</div></div>
+        <div class="how-row"><div class="how-icon" style="background:#0ea5e9">🧊</div>
+          <div class="how-text">Light from the left, right, top and bottom shades a real 3D face differently than a flat photo</div></div>
+        <div class="how-row"><div class="how-icon" style="background:#16a34a">💾</div>
+          <div class="how-text">Everything runs on this phone. Nothing is uploaded</div></div>
       </div>
 
-      <button id="btn-register" class="btn-primary">Register My Face</button>
-      <p class="hint">Stand in a dim room · Face at phone level · ~7 seconds</p>
+      <button id="btn-register" class="btn-primary" disabled>Loading face models…</button>
+      <p class="hint">Indoors, face 25–35 cm from the screen · keep still for ~7 seconds</p>
+      <p class="build-line"><span class="build-label"></span> · <button class="link-btn btn-check-update">Check for updates</button></p>
     </div>
   </div>
 
-
-  <!-- ═══════════════════════════════════════════════════
-       SCREEN 2 — Verify (every subsequent launch)
-  ═══════════════════════════════════════════════════ -->
+  <!-- ═══════════ SCREEN 2 — Verify ═══════════ -->
   <div id="screen-start" class="screen">
     <div class="start-inner">
-      <div class="logo-ring">
+      <div class="logo-ring" aria-hidden="true">
         <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="40" cy="40" r="34" fill="none" stroke="#7B00D4" stroke-width="6"
-                  stroke-dasharray="12 4" transform="rotate(-90 40 40)" opacity="0.8"/>
-          <circle cx="40" cy="40" r="26" fill="none" stroke="#0088FF" stroke-width="4"
-                  stroke-dasharray="9 3"  transform="rotate(30 40 40)"  opacity="0.7"/>
-          <circle cx="40" cy="40" r="18" fill="none" stroke="#00FF88" stroke-width="3"
-                  stroke-dasharray="7 3"  transform="rotate(60 40 40)"  opacity="0.6"/>
+          <circle cx="40" cy="40" r="34" fill="none" stroke="#ef4444" stroke-width="6" stroke-dasharray="12 4" transform="rotate(-90 40 40)" opacity="0.85"/>
+          <circle cx="40" cy="40" r="26" fill="none" stroke="#22c55e" stroke-width="4" stroke-dasharray="9 3" transform="rotate(30 40 40)" opacity="0.8"/>
+          <circle cx="40" cy="40" r="18" fill="none" stroke="#3b82f6" stroke-width="3" stroke-dasharray="7 3" transform="rotate(60 40 40)" opacity="0.8"/>
           <ellipse cx="40" cy="40" rx="10" ry="7" fill="none" stroke="white" stroke-width="1.5"/>
           <circle cx="40" cy="40" r="3.5" fill="white"/>
         </svg>
       </div>
 
       <h1>Verify<br><span class="gradient-text">Identity</span></h1>
-      <p class="subtitle">Multispectral liveness + identity check · 400–685 nm · ~4 seconds</p>
+      <p class="subtitle">Liveness from light reflection + match against your registered face</p>
 
       <div class="how-it-works">
-        <div class="how-row">
-          <div class="how-icon" style="background:#7B00D4">💡</div>
-          <div class="how-text">Screen flashes 12 colours across the visible spectrum (400–685 nm)</div>
-        </div>
-        <div class="how-row">
-          <div class="how-icon" style="background:#0055FF">📷</div>
-          <div class="how-text">Camera captures spectral skin response under each colour</div>
-        </div>
-        <div class="how-row">
-          <div class="how-icon" style="background:#22c55e">🔬</div>
-          <div class="how-text">Checks liveness + matches your registered face template</div>
-        </div>
+        <div class="how-row"><div class="how-icon" style="background:#7c3aed">🌈</div>
+          <div class="how-text">Skin's response to the screen's red, green and blue light is compared with your template</div></div>
+        <div class="how-row"><div class="how-icon" style="background:#0ea5e9">🧊</div>
+          <div class="how-text">Directional light checks for a real 3D face; stripes catch the mirror glare of photos and screens</div></div>
+        <div class="how-row"><div class="how-icon" style="background:#16a34a">🔒</div>
+          <div class="how-text">Then your face must match the registered one</div></div>
       </div>
 
-      <button id="btn-verify" class="btn-primary">Verify Identity</button>
+      <button id="btn-verify" class="btn-primary" disabled>Loading face models…</button>
       <button id="btn-reregister" class="btn-reregister">Re-register face</button>
-      <p class="hint">Best in a dim room · Keep still during the scan</p>
+      <p class="hint">Indoors, face 25–35 cm from the screen · keep still for ~7 seconds</p>
+      <p class="build-line"><span class="build-label"></span> · <button class="link-btn btn-check-update">Check for updates</button></p>
     </div>
   </div>
 
-
-  <!-- ═══════════════════════════════════════════════════
-       SCREEN 3 — Scan (shared for register & verify)
-  ═══════════════════════════════════════════════════ -->
+  <!-- ═══════════ SCREEN 3 — Scan ═══════════ -->
   <div id="screen-scan" class="screen">
-    <div id="flash-bg"></div>
     <video id="camera-feed" autoplay playsinline muted></video>
-    <canvas id="capture-canvas" style="display:none;"></canvas>
-
-    <div id="pip-container" style="display:none;">
-      <span class="pip-label">Your face</span>
-    </div>
-
-    <div id="face-guide" style="opacity:0;">
+    <div id="face-guide" aria-hidden="true">
       <svg viewBox="0 0 200 260" xmlns="http://www.w3.org/2000/svg">
-        <ellipse cx="100" cy="130" rx="78" ry="108"
-                 fill="none" stroke="rgba(255,255,255,0.7)"
-                 stroke-width="2.5" stroke-dasharray="10 5"/>
+        <ellipse cx="100" cy="130" rx="78" ry="108" fill="none" stroke="rgba(255,255,255,0.75)" stroke-width="2.5" stroke-dasharray="10 5"/>
       </svg>
     </div>
-
-    <div id="scan-footer">
-      <div id="step-label">Preparing camera…</div>
-      <div id="progress-track">
-        <div id="progress-bar"></div>
-      </div>
-      <div id="step-counter">0 / 24</div>
-    </div>
+    <div id="scan-hint">Starting camera…</div>
+    <div id="flash" hidden></div>
+    <div id="scan-progress" hidden><div id="scan-progress-bar"></div></div>
+    <button id="btn-cancel" class="btn-small btn-ghost">Cancel</button>
   </div>
 
-
-  <!-- ═══════════════════════════════════════════════════
-       SCREEN 4 — Result
-  ═══════════════════════════════════════════════════ -->
+  <!-- ═══════════ SCREEN 4 — Result ═══════════ -->
   <div id="screen-result" class="screen">
     <div class="result-inner">
       <div id="result-icon" class="result-icon"></div>
       <h2 id="result-title"></h2>
+      <p id="result-summary" class="result-summary"></p>
 
-      <!-- Liveness score -->
       <div class="score-block">
-        <div class="score-label">Liveness Score</div>
-        <div class="score-track">
-          <div id="result-score-bar"></div>
-        </div>
+        <div class="score-label">Liveness score</div>
+        <div class="score-track"><div id="result-score-bar"></div></div>
         <div id="result-score-value" class="score-value"></div>
       </div>
 
-      <!-- Identity match score (hidden during registration) -->
-      <div id="identity-block" class="score-block" style="display:none;">
-        <div class="score-label">Identity Match</div>
-        <div class="score-track">
-          <div id="identity-score-bar"></div>
-        </div>
-        <div id="identity-score-value" class="score-value"></div>
+      <div id="identity-block" class="identity-grid" hidden>
+        <div class="id-cell"><div class="score-label">Face match</div><div id="id-face" class="id-value"></div></div>
+        <div class="id-cell"><div class="score-label">Skin spectrum</div><div id="id-spectral" class="id-value"></div></div>
       </div>
 
-      <div id="result-details" class="result-details"></div>
+      <div id="result-checks" class="result-details"></div>
 
-      <button id="btn-retry" class="btn-primary btn-outline">Continue</button>
+      <button id="btn-retry" class="btn-primary">Continue</button>
+      <button id="btn-details" class="btn-reregister">Show measurement details</button>
+
+      <div id="diag" hidden>
+        <div class="maps">
+          <figure><canvas id="map-white" width="128" height="128"></canvas><figcaption>Reflected white light</figcaption></figure>
+          <figure><canvas id="map-horiz" width="128" height="128"></canvas><figcaption>Left ÷ right light</figcaption></figure>
+          <figure><canvas id="map-vert" width="128" height="128"></canvas><figcaption>Top ÷ bottom light</figcaption></figure>
+        </div>
+        <p class="diag-note">A real face shows shape in the two ratio maps (the nose splits light and dark; under the nose differs from the forehead). A photo shows a smooth gradient.</p>
+        <div id="spectral-table"></div>
+        <textarea id="diag-json" readonly spellcheck="false"></textarea>
+        <button id="btn-copy" class="btn-small">Copy report</button>
+      </div>
     </div>
   </div>
 
-  <script src="js/colors.js"></script>
-  <script src="js/analyzer.js"></script>
+  <script src="vendor/face-api/face-api.js"></script>
+  <script src="js/patterns.js"></script>
+  <script src="js/analysis.js"></script>
+  <script src="js/face.js"></script>
+  <script src="js/updater.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

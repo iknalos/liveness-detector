@@ -1,5 +1,15 @@
 apply plugin: 'com.android.application'
 
+// CI stamps each build with its run number, so a newer APK always installs over an older one
+// (the in-app updater compares this against latest.json). Local builds stay at 1.
+def ciVersionCode = (System.getenv("VERSION_CODE") ?: "1") as Integer
+def ciVersionName = System.getenv("VERSION_NAME") ?: "2.0.0-dev"
+
+// The release key is NOT in the repo: CI decodes it from the SIGNING_KEYSTORE_B64 secret.
+// Whoever holds this key can ship an update that installs over the app, so it stays private.
+def ksPath = System.getenv("SIGNING_KEYSTORE")
+def ksPass = System.getenv("SIGNING_PASSWORD")
+
 android {
     namespace "com.livenessdetector.app"
     compileSdk rootProject.ext.compileSdkVersion
@@ -7,8 +17,8 @@ android {
         applicationId "com.livenessdetector.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode ciVersionCode
+        versionName ciVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +26,21 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (ksPath) {
+                storeFile file(ksPath)
+                storeType 'pkcs12'
+                storePassword ksPass
+                keyAlias 'liveness'
+                keyPassword ksPass
+            }
+        }
+    }
     buildTypes {
         release {
+            // without the key the build is debug-signed, and CI's certificate check refuses to publish it
+            signingConfig ksPath ? signingConfigs.release : signingConfigs.debug
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

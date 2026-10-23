@@ -39,7 +39,11 @@
 
     <!-- Permissions -->
 
+    <!-- Internet is only for updates (the newest release's latest.json and its APK).
+         The scan itself runs entirely on the phone. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- in-app updates: the app downloads the new APK and hands it to the system installer -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-feature android:name="android.hardware.camera" android:required="true" />

@@ -1,22 +1,44 @@
-name: Build APK
+name: Build and release
 
 on:
   push:
     branches: [main]
+    paths-ignore: ['README.md']
   workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   build:
+    name: Tests + signed APK
     runs-on: ubuntu-latest
-
+    env:
+      # monotonic per run: the in-app updater installs anything with a higher number
+      VERSION_CODE: ${{ github.run_number }}
+      VERSION_NAME: 2.0.${{ github.run_number }}
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # simulated camera: real 3D face passes; matte, glossy and on-screen photos fail
+      - name: Analysis tests
+        run: npm test
+
+      - name: Bundle face models and sync Capacitor
+        run: npm run build
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -30,20 +52,73 @@ jobs:
       - name: Install Android build tools
         run: sdkmanager "build-tools;34.0.0" "platforms;android-34"
 
-      - name: Install dependencies and sync Capacitor
+      # The key is a secret, not a file in this public repo: whoever holds it can ship an
+      # update that installs over the app. The local copy is kept outside the repo.
+      - name: Signing key
+        env:
+          KS_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
         run: |
-          npm install
-          npx cap sync android
+          if [ -z "$KS_B64" ]; then echo "::error::The SIGNING_KEYSTORE_B64 secret is missing"; exit 1; fi
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/liveness.p12"
+          echo "SIGNING_KEYSTORE=$RUNNER_TEMP/liveness.p12" >> "$GITHUB_ENV"
 
-      - name: Make gradlew executable
-        run: chmod +x android/gradlew
+      - name: Build release APK
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          chmod +x android/gradlew
+          cd android && ./gradlew assembleRelease --no-daemon
 
-      - name: Build debug APK
-        run: cd android && ./gradlew assembleDebug --no-daemon
+      # Android only installs an update signed with the same key as the installed app, so a
+      # wrongly signed release would just fail on the phone. Refuse to publish one at all.
+      - name: Check it's signed with the LivenessCheck key
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          SIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$SIGNER" verify --print-certs "$APK" | tee certs.txt
+          GOT=$(grep -m1 'certificate SHA-256 digest' certs.txt | awk '{print $NF}')
+          WANT=$(tr -d ' \r\n' < signing-cert.sha256)
+          if [ "$GOT" != "$WANT" ]; then echo "::error::APK signed with $GOT, expected $WANT"; exit 1; fi
+          cp "$APK" LivenessCheck.apk
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: LivenessCheck-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 30
+          name: LivenessCheck-apk
+          path: LivenessCheck.apk
+          retention-days: 3       # only hands the APK to the release job; the release keeps it
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect the APK
+        uses: actions/download-artifact@v4
+        with:
+          name: LivenessCheck-apk
+          path: dist
+
+      # Installed apps read releases/latest/download/latest.json and offer this build when its
+      # number is higher than theirs; sha256 must be of the exact bytes they will download.
+      - name: Write latest.json
+        env:
+          N: ${{ github.run_number }}
+          REPO: ${{ github.repository }}
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          SHA=$(sha256sum dist/LivenessCheck.apk | cut -d' ' -f1)
+          NOTES=$(printf '%s\n' "$MSG" | head -n1)
+          jq -n --argjson build "$N" --arg version "2.0.$N" --arg sha "$SHA" \
+            --arg apk "https://github.com/$REPO/releases/download/v2.0.$N/LivenessCheck.apk" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg notes "$NOTES" \
+            '{build: $build, version: $version, apk: $apk, sha256: $sha, date: $date, notes: $notes}' > dist/latest.json
+          cat dist/latest.json
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N: ${{ github.run_number }}
+        run: |
+          gh release create "v2.0.$N" dist/LivenessCheck.apk dist/latest.json -R "$GITHUB_REPOSITORY" --latest \
+            --title "LivenessCheck 2.0.$N" \
+            --notes "Install LivenessCheck.apk on your Android phone (allow installs from your browser once). Installed copies update themselves: the app shows Update available. Built from $GITHUB_SHA."

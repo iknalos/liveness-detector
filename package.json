@@ -1,13 +1,17 @@
 {
   "name": "liveness-detector",
-  "version": "1.0.0",
-  "description": "Multispectral facial liveness detection",
+  "version": "2.0.0",
+  "description": "Face liveness from screen-light reflection: spectral (R/G/B), directional 3D and glare tests",
   "scripts": {
+    "vendor": "node scripts/vendor.js",
+    "test": "node --test test/analysis.test.js",
+    "build": "node scripts/vendor.js && cap sync android",
     "sync": "cap sync"
   },
   "dependencies": {
     "@capacitor/android": "^6.0.0",
-    "@capacitor/core": "^6.0.0"
+    "@capacitor/core": "^6.0.0",
+    "@vladmandic/face-api": "1.7.15"
   },
   "devDependencies": {
     "@capacitor/cli": "^6.0.0"
