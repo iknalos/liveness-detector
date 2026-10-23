@@ -46,11 +46,14 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android build tools
-        run: sdkmanager "build-tools;34.0.0" "platforms;android-34"
+      # the runner image ships the Android SDK (android-actions/setup-android@v3 now fails: it
+      # asks for the retired 'tools' package)
+      - name: Android SDK packages
+        run: |
+          SDKM=$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "build-tools;34.0.0" "platforms;android-34" > /dev/null
+          echo "using $SDKM"
 
       # The key is a secret, not a file in this public repo: whoever holds it can ship an
       # update that installs over the app. The local copy is kept outside the repo.
